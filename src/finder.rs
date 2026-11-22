@@ -1682,10 +1682,10 @@ pub fn list_dirs(path: &Path) -> Vec<String> {
         .into_iter()
         .flatten()
     {
-        if entry.path().is_dir() {
-            if let Some(name) = entry.file_name().to_str() {
-                dirs.push(name.to_string());
-            }
+        if entry.path().is_dir()
+            && let Some(name) = entry.file_name().to_str()
+        {
+            dirs.push(name.to_string());
         }
     }
     dirs
@@ -1802,10 +1802,11 @@ pub fn list_sub_files(path: &Path) -> Vec<String> {
         .into_iter()
         .flatten()
     {
-        if entry.path().is_file() && !entry.path().is_executable() {
-            if let Ok(rel_path) = entry.path().strip_prefix(path) {
-                files.push(rel_path.to_string_lossy().to_string());
-            }
+        if entry.path().is_file()
+            && !entry.path().is_executable()
+            && let Ok(rel_path) = entry.path().strip_prefix(path)
+        {
+            files.push(rel_path.to_string_lossy().to_string());
         }
     }
     files

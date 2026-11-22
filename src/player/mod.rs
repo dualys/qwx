@@ -501,22 +501,21 @@ impl SpotifyCredentials {
         let mut creds = Self::default();
         if let Some(config_dir) = dirs_config_path() {
             let config_file = config_dir.join("spotify.json");
-            if config_file.exists() {
-                if let Ok(content) = fs::read_to_string(&config_file) {
-                    if let Ok(loaded) = serde_json::from_str::<SpotifyCredentials>(&content) {
-                        if creds.access_token.is_none() {
-                            creds.access_token = loaded.access_token;
-                        }
-                        if creds.refresh_token.is_none() {
-                            creds.refresh_token = loaded.refresh_token;
-                        }
-                        if creds.client_id.is_none() {
-                            creds.client_id = loaded.client_id;
-                        }
-                        if creds.client_secret.is_none() {
-                            creds.client_secret = loaded.client_secret;
-                        }
-                    }
+            if config_file.exists()
+                && let Ok(content) = fs::read_to_string(&config_file)
+                && let Ok(loaded) = serde_json::from_str::<SpotifyCredentials>(&content)
+            {
+                if creds.access_token.is_none() {
+                    creds.access_token = loaded.access_token;
+                }
+                if creds.refresh_token.is_none() {
+                    creds.refresh_token = loaded.refresh_token;
+                }
+                if creds.client_id.is_none() {
+                    creds.client_id = loaded.client_id;
+                }
+                if creds.client_secret.is_none() {
+                    creds.client_secret = loaded.client_secret;
                 }
             }
         }
@@ -545,8 +544,8 @@ impl SpotifyCredentials {
         if let Some(config_dir) = dirs_config_path() {
             fs::create_dir_all(&config_dir)?;
             let config_file = config_dir.join("spotify.json");
-            let json = serde_json::to_string_pretty(self)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            let json =
+                serde_json::to_string_pretty(self).map_err(|e| io::Error::other(e.to_string()))?;
             fs::write(config_file, json)?;
         }
         Ok(())
@@ -1163,10 +1162,10 @@ impl SpotifyClient {
         let mut tracks = Vec::new();
         if let Some(items) = val["items"].as_array() {
             for item in items {
-                if let Some(track_obj) = item.get("track") {
-                    if let Some(track) = parse_spotify_track_json(track_obj) {
-                        tracks.push(track);
-                    }
+                if let Some(track_obj) = item.get("track")
+                    && let Some(track) = parse_spotify_track_json(track_obj)
+                {
+                    tracks.push(track);
                 }
             }
         }
@@ -1417,13 +1416,12 @@ fn play_local_flac(path: &std::path::Path) -> Result<(), String> {
     thread::spawn(move || {
         if let Ok(file) = File::open(&path) {
             let reader = BufReader::new(file);
-            if let Ok((_stream, handle)) = rodio::OutputStream::try_default() {
-                if let Ok(sink) = rodio::Sink::try_new(&handle) {
-                    if let Ok(source) = rodio::Decoder::new(reader) {
-                        sink.append(source);
-                        sink.sleep_until_end();
-                    }
-                }
+            if let Ok((_stream, handle)) = rodio::OutputStream::try_default()
+                && let Ok(sink) = rodio::Sink::try_new(&handle)
+                && let Ok(source) = rodio::Decoder::new(reader)
+            {
+                sink.append(source);
+                sink.sleep_until_end();
             }
         }
     });
@@ -1466,31 +1464,28 @@ impl MusicPlayer {
             if let Ok(entries) = std::fs::read_dir(&dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.is_file() {
-                        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                            let ext = ext.to_lowercase();
-                            if matches!(
-                                ext.as_str(),
-                                "mp3" | "flac" | "wav" | "ogg" | "m4a" | "aac"
-                            ) {
-                                let name = path
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("unknown")
-                                    .to_string();
-                                tracks.push(TrackItem {
-                                    id: name.clone(),
-                                    name: name.clone(),
-                                    artists: vec!["Local".to_string()],
-                                    album_name: dir.display().to_string(),
-                                    duration_ms: 0,
-                                    uri: path.display().to_string(),
-                                    preview_url: None,
-                                    popularity: None,
-                                    is_playable: true,
-                                    source: AudioSource::LocalFile { path },
-                                });
-                            }
+                    if path.is_file()
+                        && let Some(ext) = path.extension().and_then(|e| e.to_str())
+                    {
+                        let ext = ext.to_lowercase();
+                        if matches!(ext.as_str(), "mp3" | "flac" | "wav" | "ogg" | "m4a" | "aac") {
+                            let name = path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("unknown")
+                                .to_string();
+                            tracks.push(TrackItem {
+                                id: name.clone(),
+                                name: name.clone(),
+                                artists: vec!["Local".to_string()],
+                                album_name: dir.display().to_string(),
+                                duration_ms: 0,
+                                uri: path.display().to_string(),
+                                preview_url: None,
+                                popularity: None,
+                                is_playable: true,
+                                source: AudioSource::LocalFile { path },
+                            });
                         }
                     }
                 }
@@ -1786,10 +1781,8 @@ impl MusicPlayer {
         match self.active_tab {
             PlayerTab::NowPlaying => self.refresh_playback_state(),
             PlayerTab::Devices => self.refresh_devices(),
-            PlayerTab::Playlists => {
-                if self.playlists.is_empty() {
-                    self.refresh_playlists();
-                }
+            PlayerTab::Playlists if self.playlists.is_empty() => {
+                self.refresh_playlists();
             }
             _ => {}
         }
@@ -1954,10 +1947,10 @@ impl MusicPlayer {
                 KeyCode::Backspace => {
                     self.prompt_input.pop();
                 }
-                KeyCode::Char(c) => {
-                    if modifiers == KeyModifiers::NONE || modifiers == KeyModifiers::SHIFT {
-                        self.prompt_input.push(c);
-                    }
+                KeyCode::Char(c)
+                    if (modifiers == KeyModifiers::NONE || modifiers == KeyModifiers::SHIFT) =>
+                {
+                    self.prompt_input.push(c);
                 }
                 _ => {}
             }
@@ -2078,12 +2071,10 @@ impl MusicPlayer {
             (KeyModifiers::NONE, KeyCode::Char('a')) => {
                 if self.active_tab == PlayerTab::Search
                     && self.search_category == SearchCategory::Tracks
-                {
-                    if let Some(track) =
+                    && let Some(track) =
                         self.search_results.tracks.get(self.selected_index).cloned()
-                    {
-                        self.add_to_queue(track);
-                    }
+                {
+                    self.add_to_queue(track);
                 }
             }
             (KeyModifiers::NONE, KeyCode::Char('d')) | (KeyModifiers::NONE, KeyCode::Delete) => {
@@ -2905,11 +2896,10 @@ impl MusicPlayer {
         let (_title, _artist, duration, progress, pct) = if let Some(ref t) = self.playback.item {
             let total = t.duration_ms.max(1);
             let mut actual_prog = self.playback.progress_ms;
-            if self.playback.is_playing {
-                if let Some(synced_at) = self.playback.last_synced_at {
-                    actual_prog =
-                        actual_prog.saturating_add(synced_at.elapsed().as_millis() as u64);
-                }
+            if self.playback.is_playing
+                && let Some(synced_at) = self.playback.last_synced_at
+            {
+                actual_prog = actual_prog.saturating_add(synced_at.elapsed().as_millis() as u64);
             }
             let prog = actual_prog.min(total);
             (

@@ -83,7 +83,7 @@ fn configure_spotify() -> io::Result<()> {
     }
     let client_id = client_id_prompt
         .prompt()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| io::Error::other(e.to_string()))?;
 
     let mut client_secret_prompt = Text::new("Spotify Client Secret:")
         .with_help_message("Client Secret from the Spotify Developer Dashboard");
@@ -92,7 +92,7 @@ fn configure_spotify() -> io::Result<()> {
     }
     let client_secret = client_secret_prompt
         .prompt()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| io::Error::other(e.to_string()))?;
 
     let mut access_token_prompt = Text::new("Spotify Access Token (Bearer):")
         .with_help_message("OAuth Bearer access token (optional)");
@@ -101,7 +101,7 @@ fn configure_spotify() -> io::Result<()> {
     }
     let access_token = access_token_prompt
         .prompt()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| io::Error::other(e.to_string()))?;
 
     let mut refresh_token_prompt =
         Text::new("Spotify Refresh Token:").with_help_message("OAuth refresh token (optional)");
@@ -110,7 +110,7 @@ fn configure_spotify() -> io::Result<()> {
     }
     let refresh_token = refresh_token_prompt
         .prompt()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| io::Error::other(e.to_string()))?;
 
     let to_option = |s: String| -> Option<String> {
         let trimmed = s.trim();
@@ -171,7 +171,7 @@ fn update_spotify_token() -> io::Result<()> {
             eprintln!(
                 "  Tip: Make sure Client ID & Client Secret are configured via `qwx spotify` or environment variables."
             );
-            Err(io::Error::new(io::ErrorKind::Other, e))
+            Err(io::Error::other(e))
         }
     }
 }
@@ -189,7 +189,7 @@ fn clone_and_open(sub: &ArgMatches, c: &QwxConfig) -> io::Result<()> {
 
     if p.is_dir() {
         set_current_dir(p.as_path())?;
-        return Qwx::new(p.as_path(), Mode::Normal, &c).as_mut().run(w);
+        return Qwx::new(p.as_path(), Mode::Normal, c).as_mut().run(w);
     }
 
     let pb = ProgressBar::new(0);
@@ -225,7 +225,7 @@ fn clone_and_open(sub: &ArgMatches, c: &QwxConfig) -> io::Result<()> {
     });
     let w = &mut io::stdout();
     let mut fetch_options = FetchOptions::new();
-    fetch_options.depth(d.clone());
+    fetch_options.depth(*d);
     fetch_options.remote_callbacks(callbacks);
     let mut builder = RepoBuilder::new();
     builder.fetch_options(fetch_options);
@@ -234,7 +234,7 @@ fn clone_and_open(sub: &ArgMatches, c: &QwxConfig) -> io::Result<()> {
 
     if let Err(e) = builder.clone(url, dest) {
         pb.abandon_with_message(format!("Clone failed: {e}"));
-        return Err(io::Error::new(io::ErrorKind::Other, e.to_string()));
+        return Err(io::Error::other(e.to_string()));
     }
     pb.finish_with_message("Clone and checkout completed.");
     set_current_dir(p.as_path())?;

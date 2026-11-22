@@ -541,7 +541,7 @@ impl SearchHub {
                     queue!(
                         w,
                         MoveTo(start_x, start_y + new_crates_idx),
-                        Print(format!("{}", crates.name))
+                        Print(crates.name.to_string())
                     )?;
                 }
             } else if x.contains(UPDATED) {
@@ -555,7 +555,7 @@ impl SearchHub {
                     queue!(
                         w,
                         MoveTo(width / 3, start_y + updated_crates_idx),
-                        Print(format!("{}", crates.name))
+                        Print(crates.name.to_string())
                     )?;
                 }
             } else if x.contains(MOST_DOWNLOADED) {
@@ -569,7 +569,7 @@ impl SearchHub {
                     queue!(
                         w,
                         MoveTo(width / 2, start_y + most_downloaded_idx),
-                        Print(format!("{}", crates.name))
+                        Print(crates.name.to_string())
                     )?;
                 }
             }
@@ -1124,30 +1124,30 @@ pub fn search_lobsters(query: &str) -> Vec<SearchResultItem> {
     };
 
     let url = format!("https://lobste.rs/search.json?q={}", urlencoding(query));
-    if let Ok(resp) = client.get(&url).send() {
-        if let Ok(items) = resp.json::<Vec<LobstersItem>>() {
-            for item in items.into_iter().take(15) {
-                let title = item.title.unwrap_or_else(|| "Sans titre".to_string());
-                let link = item.url.unwrap_or_default();
-                let comments_url = item.comments_url.unwrap_or_default();
-                let score = item.score.unwrap_or(0);
-                let author = item
-                    .submitter_user
-                    .and_then(|u| u.username)
-                    .unwrap_or_else(|| "anonym".to_string());
-                let tags = item.tags.unwrap_or_default().join(", ");
+    if let Ok(resp) = client.get(&url).send()
+        && let Ok(items) = resp.json::<Vec<LobstersItem>>()
+    {
+        for item in items.into_iter().take(15) {
+            let title = item.title.unwrap_or_else(|| "Sans titre".to_string());
+            let link = item.url.unwrap_or_default();
+            let comments_url = item.comments_url.unwrap_or_default();
+            let score = item.score.unwrap_or(0);
+            let author = item
+                .submitter_user
+                .and_then(|u| u.username)
+                .unwrap_or_else(|| "anonym".to_string());
+            let tags = item.tags.unwrap_or_default().join(", ");
 
-                results.push(SearchResultItem {
-                    provider: SearchProvider::Lobsters,
-                    title,
-                    description: format!("Tags: {}", tags),
-                    // On privilégie l'URL externe, sinon on renvoie vers les commentaires
-                    url: if link.is_empty() { comments_url } else { link },
-                    extra_info: format!("▲ {} pts | by {}", score, author),
-                    clone_url: None,
-                    raw_content: None,
-                });
-            }
+            results.push(SearchResultItem {
+                provider: SearchProvider::Lobsters,
+                title,
+                description: format!("Tags: {}", tags),
+                // On privilégie l'URL externe, sinon on renvoie vers les commentaires
+                url: if link.is_empty() { comments_url } else { link },
+                extra_info: format!("▲ {} pts | by {}", score, author),
+                clone_url: None,
+                raw_content: None,
+            });
         }
     }
     results
@@ -1205,32 +1205,32 @@ pub fn search_rfc(query: &str) -> Vec<SearchResultItem> {
         urlencoding(&ddg_query)
     );
 
-    if let Ok(resp) = client.get(&html_url).send() {
-        if let Ok(html_text) = resp.text() {
-            let engine = crate::web::HtmlReaderEngine::new(80);
-            let page = engine.parse_html(&html_url, &html_text);
+    if let Ok(resp) = client.get(&html_url).send()
+        && let Ok(html_text) = resp.text()
+    {
+        let engine = crate::web::HtmlReaderEngine::new(80);
+        let page = engine.parse_html(&html_url, &html_text);
 
-            for link in page.links.into_iter().take(10) {
-                if !link.url.contains("duckduckgo.com") && link.url.contains("rfc-editor.org") {
-                    // Petite astuce : on remplace .html par .txt pour forcer
-                    // la lecture pure dans ton Web Reader de terminal
-                    let txt_url = link.url.replace(".html", ".txt");
-                    let title = if link.text.trim().is_empty() {
-                        "RFC Document".to_string()
-                    } else {
-                        link.text.clone()
-                    };
+        for link in page.links.into_iter().take(10) {
+            if !link.url.contains("duckduckgo.com") && link.url.contains("rfc-editor.org") {
+                // Petite astuce : on remplace .html par .txt pour forcer
+                // la lecture pure dans ton Web Reader de terminal
+                let txt_url = link.url.replace(".html", ".txt");
+                let title = if link.text.trim().is_empty() {
+                    "RFC Document".to_string()
+                } else {
+                    link.text.clone()
+                };
 
-                    results.push(SearchResultItem {
-                        provider: SearchProvider::Rfc,
-                        title,
-                        description: "Spécification technique IETF".to_string(),
-                        url: txt_url,
-                        extra_info: "RFC Spec".to_string(),
-                        clone_url: None,
-                        raw_content: None,
-                    });
-                }
+                results.push(SearchResultItem {
+                    provider: SearchProvider::Rfc,
+                    title,
+                    description: "Spécification technique IETF".to_string(),
+                    url: txt_url,
+                    extra_info: "RFC Spec".to_string(),
+                    clone_url: None,
+                    raw_content: None,
+                });
             }
         }
     }
@@ -1257,29 +1257,28 @@ pub fn search_exploit_db(query: &str) -> Vec<SearchResultItem> {
         urlencoding(query)
     );
 
-    if let Ok(resp) = client.get(&url).send() {
-        if let Ok(data) = resp.json::<GitHubCodeSearchResponse>() {
-            if let Some(items) = data.items {
-                for item in items {
-                    let path = item.path.unwrap_or_else(|| "unknown".to_string());
-                    let url = item.html_url.unwrap_or_default();
-                    let name = item.name.unwrap_or_else(|| "Exploit".to_string());
+    if let Ok(resp) = client.get(&url).send()
+        && let Ok(data) = resp.json::<GitHubCodeSearchResponse>()
+        && let Some(items) = data.items
+    {
+        for item in items {
+            let path = item.path.unwrap_or_else(|| "unknown".to_string());
+            let url = item.html_url.unwrap_or_default();
+            let name = item.name.unwrap_or_else(|| "Exploit".to_string());
 
-                    let raw_url = format!(
-                        "https://raw.githubusercontent.com/offensive-security/exploitdb/master/{path}",
-                    );
+            let raw_url = format!(
+                "https://raw.githubusercontent.com/offensive-security/exploitdb/master/{path}",
+            );
 
-                    results.push(SearchResultItem {
-                        provider: SearchProvider::ExploitDb,
-                        title: name,
-                        description: url,
-                        url: raw_url, // On passe le lien brut pour le lecteur web de qwx
-                        extra_info: "Exploit-DB PoC".to_string(),
-                        clone_url: None,
-                        raw_content: None,
-                    });
-                }
-            }
+            results.push(SearchResultItem {
+                provider: SearchProvider::ExploitDb,
+                title: name,
+                description: url,
+                url: raw_url, // On passe le lien brut pour le lecteur web de qwx
+                extra_info: "Exploit-DB PoC".to_string(),
+                clone_url: None,
+                raw_content: None,
+            });
         }
     }
     results
@@ -1307,32 +1306,32 @@ pub fn search_phrack(query: &str) -> Vec<SearchResultItem> {
         urlencoding(&ddg_query)
     );
 
-    if let Ok(resp) = client.get(&html_url).send() {
-        if let Ok(html_text) = resp.text() {
-            // Réutilisation de ton moteur de parsing HTML existant
-            let engine = crate::web::HtmlReaderEngine::new(80);
-            let page = engine.parse_html(&html_url, &html_text);
+    if let Ok(resp) = client.get(&html_url).send()
+        && let Ok(html_text) = resp.text()
+    {
+        // Réutilisation de ton moteur de parsing HTML existant
+        let engine = crate::web::HtmlReaderEngine::new(80);
+        let page = engine.parse_html(&html_url, &html_text);
 
-            for link in page.links.into_iter().take(10) {
-                // On filtre pour ne garder que les vrais liens Phrack
-                if !link.url.contains("duckduckgo.com") && link.url.contains("phrack.org") {
-                    // Nettoyage basique du titre si nécessaire
-                    let title = if link.text.trim().is_empty() {
-                        "Article Phrack".to_string()
-                    } else {
-                        link.text.clone()
-                    };
+        for link in page.links.into_iter().take(10) {
+            // On filtre pour ne garder que les vrais liens Phrack
+            if !link.url.contains("duckduckgo.com") && link.url.contains("phrack.org") {
+                // Nettoyage basique du titre si nécessaire
+                let title = if link.text.trim().is_empty() {
+                    "Article Phrack".to_string()
+                } else {
+                    link.text.clone()
+                };
 
-                    results.push(SearchResultItem {
-                        provider: SearchProvider::Phrack,
-                        title,
-                        description: "Archive Phrack Magazine".to_string(),
-                        url: link.url.clone(),
-                        extra_info: "Zine Article".to_string(),
-                        clone_url: None,
-                        raw_content: None,
-                    });
-                }
+                results.push(SearchResultItem {
+                    provider: SearchProvider::Phrack,
+                    title,
+                    description: "Archive Phrack Magazine".to_string(),
+                    url: link.url.clone(),
+                    extra_info: "Zine Article".to_string(),
+                    clone_url: None,
+                    raw_content: None,
+                });
             }
         }
     }
@@ -1388,33 +1387,32 @@ pub fn search_github(query: &str) -> Vec<SearchResultItem> {
         "https://api.github.com/search/repositories?q={}&per_page=50",
         urlencoding(query)
     );
-    if let Ok(resp) = client.get(&repo_url).send() {
-        if let Ok(data) = resp.json::<GitHubSearchResponse>() {
-            if let Some(items) = data.items {
-                for item in items {
-                    let name = item.full_name.unwrap_or_else(|| "Unknown".to_string());
-                    let desc = item
-                        .description
-                        .unwrap_or_else(|| "No description".to_string());
-                    let html = item.html_url.unwrap_or_default();
-                    let clone = item
-                        .clone_url
-                        .clone()
-                        .or_else(|| Some(format!("{}.git", html)));
-                    let stars = item.stargazers_count.unwrap_or(0);
-                    let lang = item.language.unwrap_or_else(|| "N/A".to_string());
+    if let Ok(resp) = client.get(&repo_url).send()
+        && let Ok(data) = resp.json::<GitHubSearchResponse>()
+        && let Some(items) = data.items
+    {
+        for item in items {
+            let name = item.full_name.unwrap_or_else(|| "Unknown".to_string());
+            let desc = item
+                .description
+                .unwrap_or_else(|| "No description".to_string());
+            let html = item.html_url.unwrap_or_default();
+            let clone = item
+                .clone_url
+                .clone()
+                .or_else(|| Some(format!("{}.git", html)));
+            let stars = item.stargazers_count.unwrap_or(0);
+            let lang = item.language.unwrap_or_else(|| "N/A".to_string());
 
-                    results.push(SearchResultItem {
-                        provider: SearchProvider::GitHub,
-                        title: name,
-                        description: desc,
-                        url: html,
-                        extra_info: format!("★ {} | Lang: {}", stars, lang),
-                        clone_url: clone,
-                        raw_content: None,
-                    });
-                }
-            }
+            results.push(SearchResultItem {
+                provider: SearchProvider::GitHub,
+                title: name,
+                description: desc,
+                url: html,
+                extra_info: format!("★ {} | Lang: {}", stars, lang),
+                clone_url: clone,
+                raw_content: None,
+            });
         }
     }
 
@@ -1423,27 +1421,26 @@ pub fn search_github(query: &str) -> Vec<SearchResultItem> {
         "https://api.github.com/search/issues?q={}&per_page=50",
         urlencoding(query)
     );
-    if let Ok(resp) = client.get(&issue_url).send() {
-        if let Ok(data) = resp.json::<GitHubIssueSearchResponse>() {
-            if let Some(items) = data.items {
-                for item in items {
-                    let title = item.title.unwrap_or_default();
-                    let html = item.html_url.unwrap_or_default();
-                    let state = item.state.unwrap_or_else(|| "open".to_string());
-                    let body = item.body.unwrap_or_default();
-                    let comments = item.comments.unwrap_or(0);
+    if let Ok(resp) = client.get(&issue_url).send()
+        && let Ok(data) = resp.json::<GitHubIssueSearchResponse>()
+        && let Some(items) = data.items
+    {
+        for item in items {
+            let title = item.title.unwrap_or_default();
+            let html = item.html_url.unwrap_or_default();
+            let state = item.state.unwrap_or_else(|| "open".to_string());
+            let body = item.body.unwrap_or_default();
+            let comments = item.comments.unwrap_or(0);
 
-                    results.push(SearchResultItem {
-                        provider: SearchProvider::GitHub,
-                        title: format!("[Issue/PR] {}", title),
-                        description: body.clone(),
-                        url: html,
-                        extra_info: format!("Status: {} | Comments: {}", state, comments),
-                        clone_url: None,
-                        raw_content: Some(body),
-                    });
-                }
-            }
+            results.push(SearchResultItem {
+                provider: SearchProvider::GitHub,
+                title: format!("[Issue/PR] {}", title),
+                description: body.clone(),
+                url: html,
+                extra_info: format!("Status: {} | Comments: {}", state, comments),
+                clone_url: None,
+                raw_content: Some(body),
+            });
         }
     }
 
@@ -1478,29 +1475,29 @@ pub fn search_gitlab(query: &str) -> Vec<SearchResultItem> {
         "https://gitlab.com/api/v4/projects?search={}&per_page=50",
         urlencoding(query)
     );
-    if let Ok(resp) = client.get(&url).send() {
-        if let Ok(items) = resp.json::<Vec<GitLabProjectItem>>() {
-            for item in items {
-                let title = item
-                    .name_with_namespace
-                    .unwrap_or_else(|| "Unknown".to_string());
-                let desc = item
-                    .description
-                    .unwrap_or_else(|| "No description".to_string());
-                let web = item.web_url.unwrap_or_default();
-                let clone = item.http_url_to_repo;
-                let stars = item.star_count.unwrap_or(0);
+    if let Ok(resp) = client.get(&url).send()
+        && let Ok(items) = resp.json::<Vec<GitLabProjectItem>>()
+    {
+        for item in items {
+            let title = item
+                .name_with_namespace
+                .unwrap_or_else(|| "Unknown".to_string());
+            let desc = item
+                .description
+                .unwrap_or_else(|| "No description".to_string());
+            let web = item.web_url.unwrap_or_default();
+            let clone = item.http_url_to_repo;
+            let stars = item.star_count.unwrap_or(0);
 
-                results.push(SearchResultItem {
-                    provider: SearchProvider::GitLab,
-                    title,
-                    description: desc,
-                    url: web,
-                    extra_info: format!("★ {}", stars),
-                    clone_url: clone,
-                    raw_content: None,
-                });
-            }
+            results.push(SearchResultItem {
+                provider: SearchProvider::GitLab,
+                title,
+                description: desc,
+                url: web,
+                extra_info: format!("★ {}", stars),
+                clone_url: clone,
+                raw_content: None,
+            });
         }
     }
 
@@ -1542,32 +1539,29 @@ pub fn search_wikipedia(query: &str) -> Vec<SearchResultItem> {
         "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={}&utf8=&format=json",
         urlencoding(query)
     );
-    if let Ok(resp) = client.get(&url).send() {
-        if let Ok(data) = resp.json::<WikipediaResponse>() {
-            if let Some(q) = data.query {
-                if let Some(items) = q.search {
-                    for item in items {
-                        let title = item.title.unwrap_or_default();
-                        let raw_snippet = item.snippet.unwrap_or_default();
-                        // Strip basic html tags like <span class="searchmatch">...</span>
-                        let clean_snippet = raw_snippet
-                            .replace("<span class=\"searchmatch\">", "")
-                            .replace("</span>", "");
-                        let article_url =
-                            format!("https://en.wikipedia.org/wiki/{}", urlencoding(&title));
+    if let Ok(resp) = client.get(&url).send()
+        && let Ok(data) = resp.json::<WikipediaResponse>()
+        && let Some(q) = data.query
+        && let Some(items) = q.search
+    {
+        for item in items {
+            let title = item.title.unwrap_or_default();
+            let raw_snippet = item.snippet.unwrap_or_default();
+            // Strip basic html tags like <span class="searchmatch">...</span>
+            let clean_snippet = raw_snippet
+                .replace("<span class=\"searchmatch\">", "")
+                .replace("</span>", "");
+            let article_url = format!("https://en.wikipedia.org/wiki/{}", urlencoding(&title));
 
-                        results.push(SearchResultItem {
-                            provider: SearchProvider::Wikipedia,
-                            title,
-                            description: clean_snippet.clone(),
-                            url: article_url,
-                            extra_info: "Wikipedia Article".to_string(),
-                            clone_url: None,
-                            raw_content: Some(clean_snippet),
-                        });
-                    }
-                }
-            }
+            results.push(SearchResultItem {
+                provider: SearchProvider::Wikipedia,
+                title,
+                description: clean_snippet.clone(),
+                url: article_url,
+                extra_info: "Wikipedia Article".to_string(),
+                clone_url: None,
+                raw_content: Some(clean_snippet),
+            });
         }
     }
 
@@ -1646,30 +1640,29 @@ pub fn search_cve(query: &str) -> Vec<SearchResultItem> {
         "https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch={}&resultsPerPage=50",
         urlencoding(query)
     );
-    if let Ok(resp) = client.get(&url).send() {
-        if let Ok(data) = resp.json::<NvdResponse>() {
-            if let Some(vulns) = data.vulnerabilities {
-                for v in vulns {
-                    if let Some(cve) = v.cve {
-                        let id = cve.id.unwrap_or_else(|| "CVE-Unknown".to_string());
-                        let desc = cve
-                            .descriptions
-                            .and_then(|d| d.into_iter().next())
-                            .and_then(|d| d.value)
-                            .unwrap_or_else(|| "No details provided".to_string());
-                        let cve_url = format!("https://nvd.nist.gov/vuln/detail/{}", id);
+    if let Ok(resp) = client.get(&url).send()
+        && let Ok(data) = resp.json::<NvdResponse>()
+        && let Some(vulns) = data.vulnerabilities
+    {
+        for v in vulns {
+            if let Some(cve) = v.cve {
+                let id = cve.id.unwrap_or_else(|| "CVE-Unknown".to_string());
+                let desc = cve
+                    .descriptions
+                    .and_then(|d| d.into_iter().next())
+                    .and_then(|d| d.value)
+                    .unwrap_or_else(|| "No details provided".to_string());
+                let cve_url = format!("https://nvd.nist.gov/vuln/detail/{}", id);
 
-                        results.push(SearchResultItem {
-                            provider: SearchProvider::Cve,
-                            title: id.clone(),
-                            description: desc.clone(),
-                            url: cve_url,
-                            extra_info: "NVD Security Advisory".to_string(),
-                            clone_url: None,
-                            raw_content: Some(desc),
-                        });
-                    }
-                }
+                results.push(SearchResultItem {
+                    provider: SearchProvider::Cve,
+                    title: id.clone(),
+                    description: desc.clone(),
+                    url: cve_url,
+                    extra_info: "NVD Security Advisory".to_string(),
+                    clone_url: None,
+                    raw_content: Some(desc),
+                });
             }
         }
     }
@@ -1739,34 +1732,30 @@ pub fn search_hacker_news(query: &str) -> Vec<SearchResultItem> {
         "https://hn.algolia.com/api/v1/search?query={}&tags=story&hitsPerPage=50",
         urlencoding(query)
     );
-    if let Ok(resp) = client.get(&url).send() {
-        if let Ok(data) = resp.json::<HnResponse>() {
-            if let Some(hits) = data.hits {
-                for hit in hits {
-                    let title = hit.title.unwrap_or_else(|| "No Title".to_string());
-                    let points = hit.points.unwrap_or(0);
-                    let comments = hit.num_comments.unwrap_or(0);
-                    let author = hit.author.unwrap_or_else(|| "anonymous".to_string());
-                    let id = hit.object_id.unwrap_or_default();
-                    let link = hit
-                        .url
-                        .unwrap_or_else(|| format!("https://news.ycombinator.com/item?id={}", id));
-                    let text = hit.story_text.unwrap_or_default();
+    if let Ok(resp) = client.get(&url).send()
+        && let Ok(data) = resp.json::<HnResponse>()
+        && let Some(hits) = data.hits
+    {
+        for hit in hits {
+            let title = hit.title.unwrap_or_else(|| "No Title".to_string());
+            let points = hit.points.unwrap_or(0);
+            let comments = hit.num_comments.unwrap_or(0);
+            let author = hit.author.unwrap_or_else(|| "anonymous".to_string());
+            let id = hit.object_id.unwrap_or_default();
+            let link = hit
+                .url
+                .unwrap_or_else(|| format!("https://news.ycombinator.com/item?id={}", id));
+            let text = hit.story_text.unwrap_or_default();
 
-                    results.push(SearchResultItem {
-                        provider: SearchProvider::HackerNews,
-                        title,
-                        description: text.clone(),
-                        url: link,
-                        extra_info: format!(
-                            "▲ {} pts | {} comments | by {}",
-                            points, comments, author
-                        ),
-                        clone_url: None,
-                        raw_content: if text.is_empty() { None } else { Some(text) },
-                    });
-                }
-            }
+            results.push(SearchResultItem {
+                provider: SearchProvider::HackerNews,
+                title,
+                description: text.clone(),
+                url: link,
+                extra_info: format!("▲ {} pts | {} comments | by {}", points, comments, author),
+                clone_url: None,
+                raw_content: if text.is_empty() { None } else { Some(text) },
+            });
         }
     }
 
@@ -1789,24 +1778,24 @@ pub fn audit_local_workspace(current_dir: &Path) -> Vec<SearchResultItem> {
     let mut packages: Vec<(String, String)> = Vec::new();
 
     let cargo_lock = current_dir.join("Cargo.lock");
-    if cargo_lock.exists() {
-        if let Ok(content) = fs::read_to_string(&cargo_lock) {
-            let mut current_name = String::new();
-            for line in content.lines() {
-                let line_trim = line.trim();
-                if line_trim.starts_with("name = ") {
-                    current_name = line_trim
-                        .trim_start_matches("name = ")
-                        .trim_matches('"')
-                        .to_string();
-                } else if line_trim.starts_with("version = ") && !current_name.is_empty() {
-                    let version = line_trim
-                        .trim_start_matches("version = ")
-                        .trim_matches('"')
-                        .to_string();
-                    packages.push((current_name.clone(), version));
-                    current_name.clear();
-                }
+    if cargo_lock.exists()
+        && let Ok(content) = fs::read_to_string(&cargo_lock)
+    {
+        let mut current_name = String::new();
+        for line in content.lines() {
+            let line_trim = line.trim();
+            if line_trim.starts_with("name = ") {
+                current_name = line_trim
+                    .trim_start_matches("name = ")
+                    .trim_matches('"')
+                    .to_string();
+            } else if line_trim.starts_with("version = ") && !current_name.is_empty() {
+                let version = line_trim
+                    .trim_start_matches("version = ")
+                    .trim_matches('"')
+                    .to_string();
+                packages.push((current_name.clone(), version));
+                current_name.clear();
             }
         }
     }
@@ -1827,18 +1816,19 @@ pub fn audit_local_workspace(current_dir: &Path) -> Vec<SearchResultItem> {
                     in_deps = false;
                     continue;
                 }
-                if in_deps && line_trim.contains('=') {
-                    if let Some((name, ver_part)) = line_trim.split_once('=') {
-                        let name = name.trim().to_string();
-                        let ver = ver_part
-                            .trim()
-                            .trim_matches('"')
-                            .split_whitespace()
-                            .next()
-                            .unwrap_or("0.0.0")
-                            .to_string();
-                        packages.push((name, ver));
-                    }
+                if in_deps
+                    && line_trim.contains('=')
+                    && let Some((name, ver_part)) = line_trim.split_once('=')
+                {
+                    let name = name.trim().to_string();
+                    let ver = ver_part
+                        .trim()
+                        .trim_matches('"')
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("0.0.0")
+                        .to_string();
+                    packages.push((name, ver));
                 }
             }
         }
@@ -1897,27 +1887,25 @@ pub fn audit_local_workspace(current_dir: &Path) -> Vec<SearchResultItem> {
             .post("https://api.osv.dev/v1/query")
             .json(&query_body)
             .send()
+            && let Ok(data) = resp.json::<OsvResponse>()
+            && let Some(vulns) = data.vulns
         {
-            if let Ok(data) = resp.json::<OsvResponse>() {
-                if let Some(vulns) = data.vulns {
-                    for v in vulns {
-                        let id = v.id.unwrap_or_else(|| "VULN".to_string());
-                        let summary = v
-                            .summary
-                            .unwrap_or_else(|| "Vulnerability detected".to_string());
-                        let details = v.details.unwrap_or_default();
+            for v in vulns {
+                let id = v.id.unwrap_or_else(|| "VULN".to_string());
+                let summary = v
+                    .summary
+                    .unwrap_or_else(|| "Vulnerability detected".to_string());
+                let details = v.details.unwrap_or_default();
 
-                        results.push(SearchResultItem {
-                            provider: SearchProvider::LocalAudit,
-                            title: format!("⚠️ [{}] {} ({})", id, pkg_name, pkg_ver),
-                            description: summary,
-                            url: format!("https://osv.dev/vulnerability/{}", id),
-                            extra_info: format!("Package: {} @ {}", pkg_name, pkg_ver),
-                            clone_url: None,
-                            raw_content: Some(details),
-                        });
-                    }
-                }
+                results.push(SearchResultItem {
+                    provider: SearchProvider::LocalAudit,
+                    title: format!("⚠️ [{}] {} ({})", id, pkg_name, pkg_ver),
+                    description: summary,
+                    url: format!("https://osv.dev/vulnerability/{}", id),
+                    extra_info: format!("Package: {} @ {}", pkg_name, pkg_ver),
+                    clone_url: None,
+                    raw_content: Some(details),
+                });
             }
         }
     }
@@ -1981,48 +1969,49 @@ pub fn search_duckduckgo(query: &str) -> Vec<SearchResultItem> {
         "https://api.duckduckgo.com/?q={}&format=json&no_html=1&skip_disambig=0",
         urlencoding(query)
     );
-    if let Ok(resp) = client.get(&api_url).send() {
-        if let Ok(data) = resp.json::<DdgInstantAnswerResponse>() {
-            if let Some(ref text) = data.abstract_text {
-                if !text.is_empty() {
-                    let heading = data.heading.unwrap_or_else(|| query.to_string());
-                    let url = data.abstract_url.unwrap_or_default();
+    if let Ok(resp) = client.get(&api_url).send()
+        && let Ok(data) = resp.json::<DdgInstantAnswerResponse>()
+    {
+        if let Some(ref text) = data.abstract_text
+            && !text.is_empty()
+        {
+            let heading = data.heading.unwrap_or_else(|| query.to_string());
+            let url = data.abstract_url.unwrap_or_default();
+            results.push(SearchResultItem {
+                provider: SearchProvider::Web,
+                title: heading,
+                description: text.clone(),
+                url: if url.is_empty() {
+                    format!("https://html.duckduckgo.com/html/?q={}", urlencoding(query))
+                } else {
+                    url
+                },
+                extra_info: "DuckDuckGo Instant Answer".to_string(),
+                clone_url: None,
+                raw_content: Some(text.clone()),
+            });
+        }
+
+        if let Some(topics) = data.related_topics {
+            for topic in topics.into_iter().take(10) {
+                if let (Some(text), Some(url)) = (topic.text, topic.first_url)
+                    && !text.is_empty()
+                    && !url.is_empty()
+                {
+                    let title = if let Some(dash_idx) = text.find(" - ") {
+                        text[..dash_idx].to_string()
+                    } else {
+                        text.chars().take(50).collect()
+                    };
                     results.push(SearchResultItem {
                         provider: SearchProvider::Web,
-                        title: heading,
+                        title,
                         description: text.clone(),
-                        url: if url.is_empty() {
-                            format!("https://html.duckduckgo.com/html/?q={}", urlencoding(query))
-                        } else {
-                            url
-                        },
-                        extra_info: "DuckDuckGo Instant Answer".to_string(),
+                        url,
+                        extra_info: "DuckDuckGo Web".to_string(),
                         clone_url: None,
-                        raw_content: Some(text.clone()),
+                        raw_content: Some(text),
                     });
-                }
-            }
-
-            if let Some(topics) = data.related_topics {
-                for topic in topics.into_iter().take(10) {
-                    if let (Some(text), Some(url)) = (topic.text, topic.first_url) {
-                        if !text.is_empty() && !url.is_empty() {
-                            let title = if let Some(dash_idx) = text.find(" - ") {
-                                text[..dash_idx].to_string()
-                            } else {
-                                text.chars().take(50).collect()
-                            };
-                            results.push(SearchResultItem {
-                                provider: SearchProvider::Web,
-                                title,
-                                description: text.clone(),
-                                url,
-                                extra_info: "DuckDuckGo Web".to_string(),
-                                clone_url: None,
-                                raw_content: Some(text),
-                            });
-                        }
-                    }
                 }
             }
         }
@@ -2031,22 +2020,22 @@ pub fn search_duckduckgo(query: &str) -> Vec<SearchResultItem> {
     // 2. If no instant answers or few results, also fetch HTML / lite search
     if results.is_empty() {
         let html_url = format!("https://html.duckduckgo.com/html/?q={}", urlencoding(query));
-        if let Ok(resp) = client.get(&html_url).send() {
-            if let Ok(html_text) = resp.text() {
-                let engine = crate::web::HtmlReaderEngine::new(80);
-                let page = engine.parse_html(&html_url, &html_text);
-                for link in page.links.into_iter().take(10) {
-                    if !link.url.contains("duckduckgo.com") && !link.text.trim().is_empty() {
-                        results.push(SearchResultItem {
-                            provider: SearchProvider::Web,
-                            title: link.text.clone(),
-                            description: format!("Web link: {}", link.url),
-                            url: link.url,
-                            extra_info: "DuckDuckGo Web".to_string(),
-                            clone_url: None,
-                            raw_content: None,
-                        });
-                    }
+        if let Ok(resp) = client.get(&html_url).send()
+            && let Ok(html_text) = resp.text()
+        {
+            let engine = crate::web::HtmlReaderEngine::new(80);
+            let page = engine.parse_html(&html_url, &html_text);
+            for link in page.links.into_iter().take(10) {
+                if !link.url.contains("duckduckgo.com") && !link.text.trim().is_empty() {
+                    results.push(SearchResultItem {
+                        provider: SearchProvider::Web,
+                        title: link.text.clone(),
+                        description: format!("Web link: {}", link.url),
+                        url: link.url,
+                        extra_info: "DuckDuckGo Web".to_string(),
+                        clone_url: None,
+                        raw_content: None,
+                    });
                 }
             }
         }
@@ -2119,19 +2108,19 @@ where
             20
         };
 
-        if let Ok(mut borrow) = cb_clone.try_borrow_mut() {
-            if let Some(ref mut cb) = *borrow {
-                cb(CloneProgress {
-                    percentage: pct,
-                    indexed_objects: indexed,
-                    total_objects: total,
-                    received_bytes: bytes,
-                    current_step: format!(
-                        "Receiving objects: {}/{} - {} bytes",
-                        received, total, bytes
-                    ),
-                });
-            }
+        if let Ok(mut borrow) = cb_clone.try_borrow_mut()
+            && let Some(ref mut cb) = *borrow
+        {
+            cb(CloneProgress {
+                percentage: pct,
+                indexed_objects: indexed,
+                total_objects: total,
+                received_bytes: bytes,
+                current_step: format!(
+                    "Receiving objects: {}/{} - {} bytes",
+                    received, total, bytes
+                ),
+            });
         }
         true
     });
@@ -2142,16 +2131,16 @@ where
 
     match builder.clone(repo_url, dest_path) {
         Ok(_) => {
-            if let Ok(mut borrow) = cb_holder.try_borrow_mut() {
-                if let Some(ref mut cb) = *borrow {
-                    cb(CloneProgress {
-                        percentage: 100,
-                        indexed_objects: 0,
-                        total_objects: 0,
-                        received_bytes: 0,
-                        current_step: "Cloning completed successfully!".to_string(),
-                    });
-                }
+            if let Ok(mut borrow) = cb_holder.try_borrow_mut()
+                && let Some(ref mut cb) = *borrow
+            {
+                cb(CloneProgress {
+                    percentage: 100,
+                    indexed_objects: 0,
+                    total_objects: 0,
+                    received_bytes: 0,
+                    current_step: "Cloning completed successfully!".to_string(),
+                });
             }
             Ok(format!(
                 "Repository cloned successfully into '{}'",
@@ -2160,16 +2149,16 @@ where
         }
         Err(err) => {
             // Fallback to git CLI command
-            if let Ok(mut borrow) = cb_holder.try_borrow_mut() {
-                if let Some(ref mut cb) = *borrow {
-                    cb(CloneProgress {
-                        percentage: 30,
-                        indexed_objects: 0,
-                        total_objects: 0,
-                        received_bytes: 0,
-                        current_step: "Falling back to Git CLI command...".to_string(),
-                    });
-                }
+            if let Ok(mut borrow) = cb_holder.try_borrow_mut()
+                && let Some(ref mut cb) = *borrow
+            {
+                cb(CloneProgress {
+                    percentage: 30,
+                    indexed_objects: 0,
+                    total_objects: 0,
+                    received_bytes: 0,
+                    current_step: "Falling back to Git CLI command...".to_string(),
+                });
             }
 
             let output = Command::new("git")
@@ -2181,16 +2170,16 @@ where
                 .map_err(|e| format!("Git execution error: {}", e))?;
 
             if output.status.success() {
-                if let Ok(mut borrow) = cb_holder.try_borrow_mut() {
-                    if let Some(ref mut cb) = *borrow {
-                        cb(CloneProgress {
-                            percentage: 100,
-                            indexed_objects: 0,
-                            total_objects: 0,
-                            received_bytes: 0,
-                            current_step: "Cloning completed successfully!".to_string(),
-                        });
-                    }
+                if let Ok(mut borrow) = cb_holder.try_borrow_mut()
+                    && let Some(ref mut cb) = *borrow
+                {
+                    cb(CloneProgress {
+                        percentage: 100,
+                        indexed_objects: 0,
+                        total_objects: 0,
+                        received_bytes: 0,
+                        current_step: "Cloning completed successfully!".to_string(),
+                    });
                 }
                 Ok(format!(
                     "Repository cloned successfully into '{}'",
@@ -2215,14 +2204,12 @@ pub fn create_git_branch(repo_path: &Path, branch_name: &str) -> Result<String, 
     }
 
     // Try git2
-    if let Ok(repo) = git2::Repository::discover(repo_path) {
-        if let Ok(head) = repo.head() {
-            if let Ok(commit) = head.peel_to_commit() {
-                if repo.branch(branch_name, &commit, false).is_ok() {
-                    return Ok(format!("Branch '{}' created successfully.", branch_name));
-                }
-            }
-        }
+    if let Ok(repo) = git2::Repository::discover(repo_path)
+        && let Ok(head) = repo.head()
+        && let Ok(commit) = head.peel_to_commit()
+        && repo.branch(branch_name, &commit, false).is_ok()
+    {
+        return Ok(format!("Branch '{}' created successfully.", branch_name));
     }
 
     // Fallback to git CLI

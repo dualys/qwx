@@ -884,8 +884,8 @@ impl HtmlReaderEngine {
             }
         };
 
-        let mut chars = cleaned_html.chars().peekable();
-        while let Some(c) = chars.next() {
+        let chars = cleaned_html.chars().peekable();
+        for c in chars {
             if c == '<' {
                 // Flush accumulated text before tag
                 let line_idx = lines.len();
@@ -1431,13 +1431,12 @@ impl WebBrowser {
 
     /// Follows the currently selected hyperlink.
     pub fn follow_selected_link(&mut self, terminal_width: u16) {
-        if let Some(ref page) = self.current_page {
-            if let Some(idx) = self.selected_link_idx {
-                if let Some(link) = page.links.get(idx) {
-                    let url = link.url.clone();
-                    self.open_url(&url, terminal_width);
-                }
-            }
+        if let Some(ref page) = self.current_page
+            && let Some(idx) = self.selected_link_idx
+            && let Some(link) = page.links.get(idx)
+        {
+            let url = link.url.clone();
+            self.open_url(&url, terminal_width);
         }
     }
 

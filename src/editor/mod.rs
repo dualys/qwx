@@ -3,6 +3,19 @@ use crate::finder::{Finder, FinderLayout, list_files};
 use crate::player::MusicPlayer;
 use crate::search::SearchHub;
 use crate::{Action, KeyMap, QwxConfig, build_keymap};
+
+use jinshu::storage::{BlockDevice, StorageEngine};
+
+/// Mock BlockDevice pour le développement.
+struct MockDevice;
+
+impl BlockDevice for MockDevice {
+    fn write_node(&self, _lba: u64, _data_phys_addr: u64) {}
+    fn read_node(&self, _lba: u64, _dest_phys_addr: u64) {}
+}
+
+static MOCK_DEVICE: MockDevice = MockDevice;
+
 use crossterm::cursor::{
     Hide, MoveDown, MoveLeft, MoveRight, MoveTo, MoveUp, SetCursorStyle, Show,
 };
@@ -340,7 +353,7 @@ impl<W: Write> QwxUi<W> for Qwx {
         self.finder.clone().show(
             w,
             &mut self.finder,
-            &mut self.finder_research.as_mut(),
+            self.finder_research.as_mut(),
             left_x,
             0,
             max_width,
@@ -760,80 +773,80 @@ impl QwxPanel for Qwx {
                 }
             });
 
-        if let Some(node) = self.nodes.get(node_id) {
-            if node.is_file {
-                // On force l'ancrage pour réparer la spatial_map vide
-                self.spatial_map
-                    .insert((active_idx, pane.workspace, pane.view), node_id);
-                if active_idx < self.views.len() {
-                    self.views[active_idx].active_node_id = node_id;
-                }
-
-                let mut ed = Ji::default();
-                ed.file_path = Some(self.current_dir.join(&node.name));
-
-                // 2. On charge depuis la mémoire Node (pour ne pas remettre le curseur à zéro !)
-                let full_text = node.content.join("\n");
-                ed.rope = Rope::from_str(&full_text);
-
-                let theme_keys = vec![
-                    "keyword",
-                    "keyword.function",
-                    "keyword.return",
-                    "keyword.operator",
-                    "function",
-                    "function.macro",
-                    "function.method",
-                    "method",
-                    "string",
-                    "string_literal",
-                    "character",
-                    "number",
-                    "integer",
-                    "float",
-                    "boolean",
-                    "comment",
-                    "line_comment",
-                    "block_comment",
-                    "type",
-                    "primitive_type",
-                    "type.builtin",
-                    "operator",
-                    "punctuation.bracket",
-                    "punctuation.delimiter",
-                    "variable",
-                    "variable.parameter",
-                    "variable.builtin",
-                    "property",
-                    "attribute",
-                    "label",
-                    "constant",
-                    "constant.builtin",
-                    "constant.character.escape",
-                    "namespace",
-                    "keyword.directive",
-                    "punctuation.special",
-                ];
-                if let Some(config) = detect_language(&node.ext, &node.name, &theme_keys) {
-                    ed.query = Query::new(&config.ts_config.language, config.query_string).ok();
-                    let _ = ed.parser.set_language(&config.ts_config.language);
-                    ed.lang_config = Some(config);
-                    ed.update_syntax_tree();
-                }
-
-                // 3. On restaure les coordonnées exactes gardées en mémoire
-                let total_lines = ed.rope.len_lines();
-                let safe_line = (pane.cursor as usize).min(total_lines.saturating_sub(1));
-                ed.cursor_line = safe_line;
-
-                let line_len_chars = ed.safe_line(safe_line).len_chars();
-                let safe_col = (pane.cursor_col as usize).min(line_len_chars.saturating_sub(1));
-                ed.cursor_col = safe_col;
-
-                ed.undo_stack = node.undo_stack.clone();
-                ed.redo_stack = node.redo_stack.clone();
-                self.editor = ed;
+        if let Some(node) = self.nodes.get(node_id)
+            && node.is_file
+        {
+            // On force l'ancrage pour réparer la spatial_map vide
+            self.spatial_map
+                .insert((active_idx, pane.workspace, pane.view), node_id);
+            if active_idx < self.views.len() {
+                self.views[active_idx].active_node_id = node_id;
             }
+
+            let mut ed = Ji::default();
+            ed.file_path = Some(self.current_dir.join(&node.name));
+
+            // 2. On charge depuis la mémoire Node (pour ne pas remettre le curseur à zéro !)
+            let full_text = node.content.join("\n");
+            ed.rope = Rope::from_str(&full_text);
+
+            let theme_keys = vec![
+                "keyword",
+                "keyword.function",
+                "keyword.return",
+                "keyword.operator",
+                "function",
+                "function.macro",
+                "function.method",
+                "method",
+                "string",
+                "string_literal",
+                "character",
+                "number",
+                "integer",
+                "float",
+                "boolean",
+                "comment",
+                "line_comment",
+                "block_comment",
+                "type",
+                "primitive_type",
+                "type.builtin",
+                "operator",
+                "punctuation.bracket",
+                "punctuation.delimiter",
+                "variable",
+                "variable.parameter",
+                "variable.builtin",
+                "property",
+                "attribute",
+                "label",
+                "constant",
+                "constant.builtin",
+                "constant.character.escape",
+                "namespace",
+                "keyword.directive",
+                "punctuation.special",
+            ];
+            if let Some(config) = detect_language(&node.ext, &node.name, &theme_keys) {
+                ed.query = Query::new(&config.ts_config.language, config.query_string).ok();
+                let _ = ed.parser.set_language(&config.ts_config.language);
+                ed.lang_config = Some(config);
+                ed.update_syntax_tree();
+            }
+
+            // 3. On restaure les coordonnées exactes gardées en mémoire
+            let total_lines = ed.rope.len_lines();
+            let safe_line = (pane.cursor as usize).min(total_lines.saturating_sub(1));
+            ed.cursor_line = safe_line;
+
+            let line_len_chars = ed.safe_line(safe_line).len_chars();
+            let safe_col = (pane.cursor_col as usize).min(line_len_chars.saturating_sub(1));
+            ed.cursor_col = safe_col;
+
+            ed.undo_stack = node.undo_stack.clone();
+            ed.redo_stack = node.redo_stack.clone();
+            self.editor = ed;
         }
     }
 
@@ -1036,6 +1049,7 @@ pub struct FacetSide {
 /// * `editor` - Represents the `Ji` editor instance, which is used for any text editing functionalities within the application.
 /// * `search_input` - Stores the user's input string for search operations within the application.
 pub struct Qwx {
+    engine: StorageEngine<'static, MockDevice>,
     pub config: QwxConfig,
     pub keymap: KeyMap,
     pub finder_layout: FinderLayout,
@@ -2179,13 +2193,18 @@ impl Qwx {
                             self.mode = Mode::Menu;
                             self.menu_input = ":w ".to_string();
                         }
-                        // Scelle le Noun
+                        // Scelle le Noun et alloue dans jinshu
                         let focus_idx = self.focus as usize;
                         if let Some(view) = self.views.get(focus_idx) {
                             let node_id = view.active_node_id;
                             if let Some(node) = self.nodes.iter_mut().find(|n| n.id == node_id) {
                                 let bytes = node.content.join("\n").into_bytes();
                                 node.noun = noun::Noun::of(&bytes);
+                                // Alloue un LBA
+                                if let Some(lba) = self.engine.allocator.allocate_node() {
+                                    // TODO: stocker le LBA
+                                    let _ = lba;
+                                }
                             }
                         }
                     }
@@ -2497,11 +2516,10 @@ impl Qwx {
                                     self.search_hub.web_browser.link_input.pop();
                                 }
                                 (m, KeyCode::Char(c))
-                                    if m.is_empty() || m == KeyModifiers::SHIFT =>
+                                    if (m.is_empty() || m == KeyModifiers::SHIFT)
+                                        && c.is_ascii_digit() =>
                                 {
-                                    if c.is_ascii_digit() {
-                                        self.search_hub.web_browser.link_input.push(c);
-                                    }
+                                    self.search_hub.web_browser.link_input.push(c);
                                 }
                                 _ => {}
                             }
@@ -3257,6 +3275,7 @@ impl Qwx {
                 last_search_query: None,
                 search_hub: SearchHub::default(),
                 player: MusicPlayer::default(),
+                engine: StorageEngine::new(1024, &MOCK_DEVICE),
             };
         }
         let mut nodes: Vec<Node> = Vec::new();
@@ -3265,7 +3284,7 @@ impl Qwx {
 
         for (i, filename) in file_list.iter().enumerate() {
             let fpath = PathBuf::from(filename);
-            if let Ok(node) = qwx_load_node(i, &fpath.as_path().to_path_buf()) {
+            if let Ok(node) = qwx_load_node(i, fpath.as_path()) {
                 if let Some(target) = target_file {
                     if let (Ok(p1), Ok(p2)) = (fpath.canonicalize(), target.canonicalize()) {
                         if p1 == p2 {
@@ -3281,10 +3300,10 @@ impl Qwx {
         }
 
         let mut editor = Ji::default();
-        if let Some(target) = target_file {
-            if let Ok(ed) = Ji::open(target) {
-                editor = ed;
-            }
+        if let Some(target) = target_file
+            && let Ok(ed) = Ji::open(target)
+        {
+            editor = ed;
         }
 
         let mut panes = [
@@ -3328,58 +3347,59 @@ impl Qwx {
             back_panes: [INIT_PANE_STATE; 4],
             current_facet: Facet::Front,
             current_dir: dir_path.into(),
+            engine: StorageEngine::new(1024, &MOCK_DEVICE),
         };
         q.load_active_pane_file();
         q
     }
 
     pub fn search_next(&mut self) {
-        if let Some(ref pattern) = self.last_search_query {
-            if let Ok(re) = regex::Regex::new(pattern) {
-                let text = self.editor.rope.to_string();
-                let cursor_char =
-                    self.editor.rope.line_to_char(self.editor.cursor_line) + self.editor.cursor_col;
-                let cursor_byte = self.editor.rope.char_to_byte(cursor_char);
+        if let Some(ref pattern) = self.last_search_query
+            && let Ok(re) = regex::Regex::new(pattern)
+        {
+            let text = self.editor.rope.to_string();
+            let cursor_char =
+                self.editor.rope.line_to_char(self.editor.cursor_line) + self.editor.cursor_col;
+            let cursor_byte = self.editor.rope.char_to_byte(cursor_char);
 
-                let search_start = (cursor_byte + 1).min(text.len());
-                let found = re.find_at(&text, search_start).or_else(|| re.find(&text));
+            let search_start = (cursor_byte + 1).min(text.len());
+            let found = re.find_at(&text, search_start).or_else(|| re.find(&text));
 
-                if let Some(m) = found {
-                    let match_char = self.editor.rope.byte_to_char(m.start());
-                    self.editor.cursor_line = self.editor.rope.char_to_line(match_char);
-                    self.editor.cursor_col =
-                        match_char - self.editor.rope.line_to_char(self.editor.cursor_line);
-                    self.active_pane_mut().cursor = self.editor.cursor_line as u16;
-                }
+            if let Some(m) = found {
+                let match_char = self.editor.rope.byte_to_char(m.start());
+                self.editor.cursor_line = self.editor.rope.char_to_line(match_char);
+                self.editor.cursor_col =
+                    match_char - self.editor.rope.line_to_char(self.editor.cursor_line);
+                self.active_pane_mut().cursor = self.editor.cursor_line as u16;
             }
         }
     }
 
     pub fn search_prev(&mut self) {
-        if let Some(ref pattern) = self.last_search_query {
-            if let Ok(re) = regex::Regex::new(pattern) {
-                let text = self.editor.rope.to_string();
-                let cursor_char =
-                    self.editor.rope.line_to_char(self.editor.cursor_line) + self.editor.cursor_col;
-                let cursor_byte = self.editor.rope.char_to_byte(cursor_char);
+        if let Some(ref pattern) = self.last_search_query
+            && let Ok(re) = regex::Regex::new(pattern)
+        {
+            let text = self.editor.rope.to_string();
+            let cursor_char =
+                self.editor.rope.line_to_char(self.editor.cursor_line) + self.editor.cursor_col;
+            let cursor_byte = self.editor.rope.char_to_byte(cursor_char);
 
-                let mut prev_match = None;
-                let mut last_match = None;
-                for m in re.find_iter(&text) {
-                    if m.start() < cursor_byte {
-                        prev_match = Some(m);
-                    }
-                    last_match = Some(m);
+            let mut prev_match = None;
+            let mut last_match = None;
+            for m in re.find_iter(&text) {
+                if m.start() < cursor_byte {
+                    prev_match = Some(m);
                 }
+                last_match = Some(m);
+            }
 
-                let target = prev_match.or(last_match);
-                if let Some(m) = target {
-                    let match_char = self.editor.rope.byte_to_char(m.start());
-                    self.editor.cursor_line = self.editor.rope.char_to_line(match_char);
-                    self.editor.cursor_col =
-                        match_char - self.editor.rope.line_to_char(self.editor.cursor_line);
-                    self.active_pane_mut().cursor = self.editor.cursor_line as u16;
-                }
+            let target = prev_match.or(last_match);
+            if let Some(m) = target {
+                let match_char = self.editor.rope.byte_to_char(m.start());
+                self.editor.cursor_line = self.editor.rope.char_to_line(match_char);
+                self.editor.cursor_col =
+                    match_char - self.editor.rope.line_to_char(self.editor.cursor_line);
+                self.active_pane_mut().cursor = self.editor.cursor_line as u16;
             }
         }
     }
