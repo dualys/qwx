@@ -112,6 +112,18 @@ pub enum FinderLayout {
     /// └──────────────┴──────┴──────┘
     /// ```
     Mosaic,
+    /// Single full-screen panel (ideal for portrait / narrow terminals)
+    /// ```txt
+    /// ┌─────────────────────────────────────────────────┐
+    /// │                   RESEARCH                      │
+    /// └─────────────────────────────────────────────────┘
+    /// ┌─────────────────────────────────────────────────┐
+    /// │ FILES                                           │
+    /// │                                                 │
+    /// │                                                 │
+    /// └─────────────────────────────────────────────────┘
+    /// ```
+    Single,
 }
 
 impl Display for FinderLayout {
@@ -123,7 +135,8 @@ impl FinderLayout {
     pub fn next(&self) -> Self {
         match self {
             Self::Grid => Self::SideBySide,
-            Self::SideBySide => Self::Miller,
+            Self::SideBySide => Self::Single,
+            Self::Single => Self::Miller,
             Self::Miller => Self::Commander,
             Self::Commander => Self::Mosaic,
             Self::Mosaic => Self::Grid,
@@ -133,7 +146,8 @@ impl FinderLayout {
         match self {
             Self::Grid => Self::Mosaic,
             Self::SideBySide => Self::Grid,
-            Self::Miller => Self::SideBySide,
+            Self::Single => Self::SideBySide,
+            Self::Miller => Self::Single,
             Self::Commander => Self::Miller,
             Self::Mosaic => Self::Commander,
         }
@@ -163,6 +177,9 @@ impl FinderLayout {
             }
             Self::SideBySide => {
                 draw_side_by_side_finder(finder, w, research, start_x, start_y, width, height)
+            }
+            Self::Single => {
+                draw_single_finder(finder, w, research, start_x, start_y, width, height)
             }
         }
     }
@@ -386,6 +403,119 @@ fn draw_side_by_side_finder<W: Write>(
         Print("─".repeat(left_inner_width)),
         Print("┴"),
         Print("─".repeat(right_inner_width)),
+        Print("┘"),
+    )?;
+    w.flush()?;
+    Ok(())
+}
+
+fn draw_single_finder<W: Write>(
+    finder: &Finder,
+    w: &mut W,
+    research: &str,
+    start_x: u16,
+    start_y: u16,
+    width: u16,
+    height: u16,
+) -> Result<()> {
+    // Research bar
+    queue!(
+        w,
+        MoveTo(start_x, start_y),
+        SetForegroundColor(FINDER_BORDER),
+        Print("┌"),
+        Print("─".repeat((width - 2) as usize)),
+        Print("┐"),
+        MoveTo(start_x, start_y + 1),
+        Print("│"),
+        SetForegroundColor(FINDER_BORDER),
+        Print(format!(" {} ", research)),
+        SetForegroundColor(FINDER_BORDER),
+        MoveTo(start_x + width - 1, start_y + 1),
+        Print("│"),
+        MoveTo(start_x, start_y + 2),
+        Print("└"),
+        Print("─".repeat((width - 2) as usize)),
+        Print("┘"),
+    )?;
+
+    let panel_start_y = start_y + 3;
+    let panel_height = height.saturating_sub(7);
+    let inner_width = width.saturating_sub(2) as usize;
+    let inner_height = panel_height.saturating_sub(1) as usize;
+
+    // Full-width panel border
+    queue!(
+        w,
+        MoveTo(start_x, panel_start_y),
+        SetForegroundColor(FINDER_BORDER),
+        Print("┌"),
+        Print("─".repeat(inner_width)),
+        Print("┐"),
+    )?;
+
+    queue!(
+        w,
+        MoveTo(start_x + 2, panel_start_y),
+        SetForegroundColor(FINDER_BORDER),
+        Print(" FILES "),
+    )?;
+
+    for i in 1..panel_height {
+        queue!(
+            w,
+            MoveTo(start_x, panel_start_y + i),
+            SetForegroundColor(FINDER_BORDER),
+            Print("│"),
+            MoveTo(start_x + width - 1, panel_start_y + i),
+            Print("│"),
+        )?;
+    }
+
+    // Render files full width
+    render_list(
+        w,
+        &finder.files,
+        finder.selected_file,
+        start_x + 1,
+        panel_start_y + 1,
+        inner_width,
+        inner_height,
+        FINDER_FILE_COLOR,
+    )?;
+
+    let bottom_y = panel_start_y + panel_height;
+    queue!(
+        w,
+        MoveTo(start_x, bottom_y),
+        SetForegroundColor(FINDER_BORDER),
+        Print("└"),
+        Print("─".repeat(inner_width)),
+        Print("┘"),
+    )?;
+
+    // Footer
+    let footer_y = bottom_y + 1;
+    queue!(
+        w,
+        MoveTo(start_x, footer_y),
+        SetForegroundColor(FINDER_BORDER),
+        Print("┌"),
+        Print("─".repeat(inner_width)),
+        Print("┐"),
+        MoveTo(start_x, footer_y + 1),
+        Print("│"),
+        SetForegroundColor(FINDER_BORDER),
+        Print(format_item_name(
+            &format!(" FILES FOUNDED: {}", finder.files.len()),
+            inner_width
+        )),
+        SetForegroundColor(FINDER_BORDER),
+        MoveTo(start_x + width - 1, footer_y + 1),
+        Print("│"),
+        MoveTo(start_x, footer_y + 2),
+        Print("└"),
+        Print("─".repeat(inner_width)),
         Print("┘"),
     )?;
     w.flush()?;
