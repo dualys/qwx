@@ -131,6 +131,8 @@ pub fn build_keymap(config: &QwxConfig) -> KeyMap {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
+    SearchPrev,
+    SearchNext,
     PageUp,
     PageDown,
     MoveUp,

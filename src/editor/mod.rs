@@ -199,7 +199,7 @@ pub trait QwxUi<W: Write> {
 impl<W: Write> QwxUi<W> for Qwx {
     fn draw(&mut self, w: &mut W) -> Result<(), Error> {
         match self.mode {
-            Mode::Normal => self.draw_normal(w),
+            Mode::Occurences | Mode::Normal => self.draw_normal(w),
             Mode::Menu => self.draw_menu(w),
             Mode::Finder => self.draw_finder(w),
             Mode::Editor => self.draw_editor(w),
@@ -289,8 +289,7 @@ impl<W: Write> QwxUi<W> for Qwx {
     fn draw_normal(&mut self, w: &mut W) -> Result<(), Error> {
         self.base(w)?;
         queue!(w, Show, SetCursorStyle::BlinkingUnderScore)?;
-
-        let is_portrait = self.width < 130;
+        let is_portrait = self.width < self.height;
         let (start_x, start_y, p_width, p_height) = if is_portrait {
             (
                 1,
@@ -380,7 +379,7 @@ impl<W: Write> QwxUi<W> for Qwx {
 
     fn draw_menu(&mut self, w: &mut W) -> Result<(), Error> {
         self.base(w)?;
-        let is_portrait = self.width < 130;
+        let is_portrait = self.width < self.height;
         let (start_x, start_y, pane_width) = if is_portrait {
             (1, 1, self.width.saturating_sub(2))
         } else {
@@ -415,7 +414,7 @@ impl<W: Write> QwxUi<W> for Qwx {
         self.base(w)?;
         queue!(w, Show, SetCursorStyle::SteadyBlock)?;
 
-        let is_portrait = self.width < 130;
+        let is_portrait = self.width < self.height;
         let (start_x, start_y, p_width, p_height) = if is_portrait {
             (
                 1,
@@ -479,7 +478,7 @@ impl<W: Write> QwxUi<W> for Qwx {
         // 1. On dessine l'interface de base (les panneaux, le texte, etc.)
         self.base(w)?;
 
-        let is_portrait = self.width < 130;
+        let is_portrait = self.width < self.height;
         let (start_x, start_y, pane_width) = if is_portrait {
             (1, 1, self.width.saturating_sub(2))
         } else {
@@ -520,7 +519,7 @@ impl<W: Write> QwxUi<W> for Qwx {
     }
 
     fn base(&mut self, w: &mut W) -> Result<(), Error> {
-        let is_portrait = self.width < 130;
+        let is_portrait = self.width < self.height;
 
         let panes_bounds: Vec<(PaneFocus, u16, u16, u16, u16)> = if is_portrait {
             // Portrait: only the focused panel, fullscreen
@@ -1342,6 +1341,7 @@ pub struct PaneState {
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub enum Mode {
     Normal,
+    Occurences,
     Menu,
     Finder,
     Editor,
@@ -1728,6 +1728,7 @@ impl Qwx {
 
             if let Some(action) = self.keymap.get(&(e.modifiers, e.code)) {
                 match action {
+                    Action::SearchPrev | Action::SearchNext => {}
                     Action::DeleteSelection => {
                         if self.editor.selection.is_some() {
                             self.editor.delete_selection();
@@ -2432,6 +2433,44 @@ impl Qwx {
         self.load_active_pane_file();
     }
 
+    fn handle_occurences<W: Write>(&mut self, w: &mut W) {
+        self.reset(w).expect("failed to reset");
+        loop {
+            self.draw_normal(w).expect("failed to draw search");
+            match read().expect("msg") {
+                Event::Key(key) => match (key.modifiers, key.code) {
+                    (KeyModifiers::NONE, KeyCode::Esc) => {
+                        self.mode = Mode::Normal;
+                        self.reset(w).expect("failed to reset editor");
+                        break;
+                    }
+                    (KeyModifiers::NONE, KeyCode::Char('n')) => {
+                        self.search_next();
+                        self.sync_node_content();
+                        self.follow();
+                    }
+                    (KeyModifiers::NONE, KeyCode::Char('p')) => {
+                        self.search_next();
+                        self.sync_node_content();
+                        self.follow();
+                    }
+                    (KeyModifiers::NONE, KeyCode::Backspace) => {
+                        self.search_input.pop();
+                    }
+                    (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {
+                        self.search_input.push(c);
+                    }
+                    _ => {}
+                },
+                Event::Resize(cols, rows) => {
+                    self.width = cols;
+                    self.height = rows;
+                    self.reset(w).expect("failed to reset on resize");
+                }
+                _ => {}
+            }
+        }
+    }
     fn handle_search<W: Write>(&mut self, w: &mut W) {
         self.reset(w).expect("failed to reset editor");
         loop {
@@ -2445,15 +2484,16 @@ impl Qwx {
                     }
                     (KeyModifiers::NONE, KeyCode::Enter) => {
                         if !self.search_input.is_empty() {
+                            self.mode = Mode::Occurences;
                             self.last_search_query = Some(self.search_input.clone());
-                            self.mode = Mode::Normal;
+                            self.reset(w).expect("failed to reset editor");
                             break;
                         }
                     }
                     (KeyModifiers::NONE, KeyCode::Backspace) => {
                         self.search_input.pop();
                     }
-                    (KeyModifiers::NONE, KeyCode::Char(c)) => {
+                    (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {
                         self.search_input.push(c);
                     }
                     _ => {}
@@ -3051,6 +3091,7 @@ impl Qwx {
     }
     pub fn handle_events<W: Write>(&mut self, w: &mut W) {
         match self.mode {
+            Mode::Occurences => self.handle_occurences(w),
             Mode::Normal => self.handle_normal(w),
             Mode::Finder => self.handle_finder(w),
             Mode::Menu => self.handle_menu(w),
@@ -3256,7 +3297,7 @@ impl Qwx {
     }
     /// Creates a new instance of the editor with the specified path and open mode.
     pub fn new(path: &Path, open_mode: Mode, c: &QwxConfig) -> Self {
-        let (width, height) = size().expect("failed to get size");
+        let (height, width) = size().expect("failed to get size");
 
         let (dir_path, target_file) = if path.is_file() {
             (path.parent().unwrap_or_else(|| Path::new(".")), Some(path))
