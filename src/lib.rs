@@ -71,7 +71,6 @@ pub fn build_keymap(config: &QwxConfig) -> KeyMap {
     map.insert(parse_key(&config.keys.pageup), Action::PageUp);
     map.insert(parse_key(&config.keys.pagedown), Action::PageDown);
     map.insert(parse_key(&config.keys.select_line), Action::SelectLine);
-    map.insert(parse_key(&config.keys.delete_line), Action::DeleteLine);
     map.insert(
         parse_key(&config.keys.delete_selection),
         Action::DeleteSelection,
@@ -139,7 +138,7 @@ pub enum Action {
     MoveLeft,
     MoveRight,
     SelectLine,
-    DeleteLine,
+    DeleteSelectedLines,
     Undo,
     Redo,
     Yank,
@@ -186,7 +185,6 @@ pub struct QwxKeysConfig {
     pub move_right: String,
     pub move_up: String,
     pub select_line: String,
-    pub delete_line: String,
     pub redo: String,
     pub undo: String,
     pub yank: String,
@@ -229,7 +227,6 @@ impl Default for QwxKeysConfig {
             move_right: String::from("l"),
             move_up: String::from("k"),
             select_line: String::from("x"),
-            delete_line: String::from("C-x"),
             redo: String::from("r"),
             undo: String::from("u"),
             yank: String::from("y"),
@@ -246,10 +243,10 @@ impl Default for QwxKeysConfig {
             open_finder: String::from("A-f"),
             edit: String::from("e"),
             edit_new_line: String::from("o"),
-            open_menu: String::from("A-d"),
+            open_menu: String::from(":"),
             search: String::from("/"),
             open_web: String::from("A-w"),
-            open_player: String::from("A-m"),
+            open_player: String::from("A-p"),
             quit: String::from("q"),
             rotate_clockwise: String::from("C-r"),
             rotate_counter_clockwise: String::from("A-r"),

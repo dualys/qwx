@@ -1728,6 +1728,13 @@ impl Qwx {
 
             if let Some(action) = self.keymap.get(&(e.modifiers, e.code)) {
                 match action {
+                    Action::DeleteSelection => {
+                        if self.editor.selection.is_some() {
+                            self.editor.delete_selection();
+                            self.sync_node_content();
+                            self.follow();
+                        }
+                    }
                     Action::MoveDown => {
                         let total_lines = self.editor.rope.len_lines();
                         if self.editor.cursor_line + 1 < total_lines {
@@ -1784,10 +1791,14 @@ impl Qwx {
                         self.editor.select_line();
                         self.follow();
                     }
-                    Action::DeleteLine => {
+                    Action::DeleteSelectedLines => {
+                        eprintln!("DEBUG: DeleteLine, selection={:?}", self.editor.selection);
                         if self.editor.selection.is_some() {
                             self.editor.delete_selection();
                             self.sync_node_content();
+                            eprintln!("DEBUG: deleted, lines={}", self.editor.rope.len_lines());
+                        } else {
+                            eprintln!("DEBUG: no selection!");
                         }
                     }
                     Action::Redo => {
@@ -2039,12 +2050,6 @@ impl Qwx {
                         let pane = self.active_pane_mut();
                         pane.workspace = pane.workspace.saturating_sub(1).max(1);
                         self.load_active_pane_file();
-                    }
-                    Action::DeleteSelection => {
-                        if self.editor.selection.is_some() {
-                            self.editor.delete_selection();
-                        }
-                        self.follow();
                     }
                 }
             }
