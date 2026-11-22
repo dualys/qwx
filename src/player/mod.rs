@@ -338,8 +338,8 @@ pub enum PlayerTab {
 impl PlayerTab {
     pub fn all() -> &'static [PlayerTab] {
         &[
-            Self::Search,
             Self::Queue,
+            Self::Search,
             Self::Playlists,
             Self::Devices,
             Self::Config,
@@ -348,11 +348,11 @@ impl PlayerTab {
     pub fn title(&self) -> &'static str {
         match self {
             Self::NowPlaying => "Now Playing",
-            Self::Search => "Search & Explore",
+            Self::Search => "Spotify Search",
             Self::Queue => "Play Queue",
             Self::Playlists => "Playlists & Albums",
             Self::Devices => "Connect Devices",
-            Self::Config => "Spotify Auth & Settings",
+            Self::Config => "Spotify Settings",
         }
     }
     pub fn shortcut(&self) -> char {
@@ -1437,7 +1437,7 @@ impl MusicPlayer {
         let mut player = Self {
             client,
             playback: PlaybackState::default(),
-            active_tab: PlayerTab::Search,
+            active_tab: PlayerTab::Queue,
             selected_index: 0,
             scroll_offset: 0,
             search_query: String::new(),
