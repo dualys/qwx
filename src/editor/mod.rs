@@ -268,62 +268,62 @@ impl<W: Write> QwxUi<W> for Qwx {
         self.base(w)?;
         queue!(w, Show, SetCursorStyle::BlinkingUnderScore)?;
 
-        let max_width = 180.min(self.width);
-        let left_x = (self.width.saturating_sub(max_width)) / 2;
-        let right_x = left_x + max_width.saturating_sub(1);
-        let mid_x = left_x + (max_width / 2);
-
-        let top_y = 0;
-        let bottom_y = self.height.saturating_sub(1);
-        let mid_y = self.height / 2;
-
-        let panes_bounds = [
+        let is_portrait = self.width < 130;
+        let (start_x, start_y, p_width, p_height) = if is_portrait {
             (
-                PaneFocus::TopLeft,
-                left_x + 1,
-                top_y + 1,
-                (mid_x - left_x).saturating_sub(1),
-                (mid_y - top_y).saturating_sub(1),
-            ),
-            (
-                PaneFocus::TopRight,
-                mid_x + 1,
-                top_y + 1,
-                (right_x - mid_x).saturating_sub(1),
-                (mid_y - top_y).saturating_sub(1),
-            ),
-            (
-                PaneFocus::BottomLeft,
-                left_x + 1,
-                mid_y + 1,
-                (mid_x - left_x).saturating_sub(1),
-                (bottom_y - mid_y).saturating_sub(1),
-            ),
-            (
-                PaneFocus::BottomRight,
-                mid_x + 1,
-                mid_y + 1,
-                (right_x - mid_x).saturating_sub(1),
-                (bottom_y - mid_y).saturating_sub(1),
-            ),
-        ];
+                1,
+                1,
+                self.width.saturating_sub(2),
+                self.height.saturating_sub(2),
+            )
+        } else {
+            let max_width = 180.min(self.width);
+            let left_x = (self.width.saturating_sub(max_width)) / 2;
+            let right_x = left_x + max_width.saturating_sub(1);
+            let mid_x = left_x + (max_width / 2);
+            let top_y = 0;
+            let bottom_y = self.height.saturating_sub(1);
+            let mid_y = self.height / 2;
 
-        if let Some(&(_, start_x, start_y, p_width, p_height)) = panes_bounds
-            .iter()
-            .find(|(focus, _, _, _, _)| *focus == self.focus)
-        {
-            let active_pane = self.panes[self.focus as usize];
-            let scroll_y = active_pane.cursor as usize;
-            let line_idx = self.editor.cursor_line;
-            let col_idx = self.editor.cursor_col;
-
-            if line_idx >= scroll_y && line_idx < scroll_y + (p_height.saturating_sub(1) as usize) {
-                let screen_y = start_y + 1 + (line_idx - scroll_y) as u16;
-                let screen_x = start_x + (col_idx as u16).min(p_width.saturating_sub(1));
-                queue!(w, MoveTo(screen_x, screen_y))?;
-            } else {
-                queue!(w, Hide)?;
+            match self.focus {
+                PaneFocus::TopLeft => (
+                    left_x + 1,
+                    top_y + 1,
+                    (mid_x - left_x).saturating_sub(1),
+                    (mid_y - top_y).saturating_sub(1),
+                ),
+                PaneFocus::TopRight => (
+                    mid_x + 1,
+                    top_y + 1,
+                    (right_x - mid_x).saturating_sub(1),
+                    (mid_y - top_y).saturating_sub(1),
+                ),
+                PaneFocus::BottomLeft => (
+                    left_x + 1,
+                    mid_y + 1,
+                    (mid_x - left_x).saturating_sub(1),
+                    (bottom_y - mid_y).saturating_sub(1),
+                ),
+                PaneFocus::BottomRight => (
+                    mid_x + 1,
+                    mid_y + 1,
+                    (right_x - mid_x).saturating_sub(1),
+                    (bottom_y - mid_y).saturating_sub(1),
+                ),
             }
+        };
+
+        let active_pane = self.panes[self.focus as usize];
+        let scroll_y = active_pane.cursor as usize;
+        let line_idx = self.editor.cursor_line;
+        let col_idx = self.editor.cursor_col;
+
+        if line_idx >= scroll_y && line_idx < scroll_y + (p_height.saturating_sub(1) as usize) {
+            let screen_y = start_y + 1 + (line_idx - scroll_y) as u16;
+            let screen_x = start_x + (col_idx as u16).min(p_width.saturating_sub(1));
+            queue!(w, MoveTo(screen_x, screen_y))?;
+        } else {
+            queue!(w, Hide)?;
         }
         w.flush()?;
         Ok(())
@@ -358,20 +358,22 @@ impl<W: Write> QwxUi<W> for Qwx {
 
     fn draw_menu(&mut self, w: &mut W) -> Result<(), Error> {
         self.base(w)?;
-        let max_width = 180.min(self.width);
-
-        let left_x = (self.width.saturating_sub(max_width)) / 2;
-
-        let right_x = left_x + max_width.saturating_sub(1);
-        let mid_x = left_x + (max_width / 2);
-
-        let top_y = 1;
-        let mid_y = self.height / 2;
-        let (start_x, start_y, pane_width) = match self.focus {
-            PaneFocus::TopLeft => (left_x, top_y, mid_x - left_x),
-            PaneFocus::TopRight => (mid_x + 1, top_y, right_x - mid_x),
-            PaneFocus::BottomLeft => (left_x, mid_y + 1, mid_x - left_x),
-            PaneFocus::BottomRight => (mid_x + 1, mid_y + 1, right_x - mid_x),
+        let is_portrait = self.width < 130;
+        let (start_x, start_y, pane_width) = if is_portrait {
+            (1, 1, self.width.saturating_sub(2))
+        } else {
+            let max_width = 180.min(self.width);
+            let left_x = (self.width.saturating_sub(max_width)) / 2;
+            let right_x = left_x + max_width.saturating_sub(1);
+            let mid_x = left_x + (max_width / 2);
+            let top_y = 1;
+            let mid_y = self.height / 2;
+            match self.focus {
+                PaneFocus::TopLeft => (left_x, top_y, mid_x - left_x),
+                PaneFocus::TopRight => (mid_x + 1, top_y, right_x - mid_x),
+                PaneFocus::BottomLeft => (left_x, mid_y + 1, mid_x - left_x),
+                PaneFocus::BottomRight => (mid_x + 1, mid_y + 1, right_x - mid_x),
+            }
         };
         let prompt = format!(" {} ", self.menu_input);
         let padded_prompt = format!("{:<width$}", prompt, width = pane_width as usize);
@@ -391,63 +393,61 @@ impl<W: Write> QwxUi<W> for Qwx {
         self.base(w)?;
         queue!(w, Show, SetCursorStyle::SteadyBlock)?;
 
-        let max_width = 180.min(self.width);
-
-        let left_x = (self.width.saturating_sub(max_width)) / 2;
-
-        let right_x = left_x + max_width.saturating_sub(1);
-        let mid_x = left_x + (max_width / 2);
-
-        let top_y = 0;
-        let bottom_y = self.height.saturating_sub(1);
-        let mid_y = self.height / 2;
-
-        let panes_bounds = [
+        let is_portrait = self.width < 130;
+        let (start_x, start_y, p_width, p_height) = if is_portrait {
             (
-                PaneFocus::TopLeft,
-                left_x + 1,
-                top_y + 1,
-                (mid_x - left_x).saturating_sub(1),
-                (mid_y - top_y).saturating_sub(1),
-            ),
-            (
-                PaneFocus::TopRight,
-                mid_x + 1,
-                top_y + 1,
-                (right_x - mid_x).saturating_sub(1),
-                (mid_y - top_y).saturating_sub(1),
-            ),
-            (
-                PaneFocus::BottomLeft,
-                left_x + 1,
-                mid_y + 1,
-                (mid_x - left_x).saturating_sub(1),
-                (bottom_y - mid_y).saturating_sub(1),
-            ),
-            (
-                PaneFocus::BottomRight,
-                mid_x + 1,
-                mid_y + 1,
-                (right_x - mid_x).saturating_sub(1),
-                (bottom_y - mid_y).saturating_sub(1),
-            ),
-        ];
-        let active_bounds = panes_bounds
-            .iter()
-            .find(|(focus, _, _, _, _)| *focus == self.focus);
+                1,
+                1,
+                self.width.saturating_sub(2),
+                self.height.saturating_sub(2),
+            )
+        } else {
+            let max_width = 180.min(self.width);
+            let left_x = (self.width.saturating_sub(max_width)) / 2;
+            let right_x = left_x + max_width.saturating_sub(1);
+            let mid_x = left_x + (max_width / 2);
+            let top_y = 0;
+            let bottom_y = self.height.saturating_sub(1);
+            let mid_y = self.height / 2;
 
-        if let Some(&(_, start_x, start_y, p_width, p_height)) = active_bounds {
-            let active_pane = self.panes[self.focus as usize];
-            let scroll_y = active_pane.cursor as usize;
-            let line_idx = self.editor.cursor_line;
-            let col_idx = self.editor.cursor_col;
-            if line_idx >= scroll_y && line_idx < scroll_y + (p_height.saturating_sub(1) as usize) {
-                let screen_y = start_y + 1 + (line_idx - scroll_y) as u16;
-                let screen_x = start_x + (col_idx as u16).min(p_width.saturating_sub(1));
-                queue!(w, MoveTo(screen_x, screen_y))?;
-            } else {
-                queue!(w, Hide)?;
+            match self.focus {
+                PaneFocus::TopLeft => (
+                    left_x + 1,
+                    top_y + 1,
+                    (mid_x - left_x).saturating_sub(1),
+                    (mid_y - top_y).saturating_sub(1),
+                ),
+                PaneFocus::TopRight => (
+                    mid_x + 1,
+                    top_y + 1,
+                    (right_x - mid_x).saturating_sub(1),
+                    (mid_y - top_y).saturating_sub(1),
+                ),
+                PaneFocus::BottomLeft => (
+                    left_x + 1,
+                    mid_y + 1,
+                    (mid_x - left_x).saturating_sub(1),
+                    (bottom_y - mid_y).saturating_sub(1),
+                ),
+                PaneFocus::BottomRight => (
+                    mid_x + 1,
+                    mid_y + 1,
+                    (right_x - mid_x).saturating_sub(1),
+                    (bottom_y - mid_y).saturating_sub(1),
+                ),
             }
+        };
+
+        let active_pane = self.panes[self.focus as usize];
+        let scroll_y = active_pane.cursor as usize;
+        let line_idx = self.editor.cursor_line;
+        let col_idx = self.editor.cursor_col;
+        if line_idx >= scroll_y && line_idx < scroll_y + (p_height.saturating_sub(1) as usize) {
+            let screen_y = start_y + 1 + (line_idx - scroll_y) as u16;
+            let screen_x = start_x + (col_idx as u16).min(p_width.saturating_sub(1));
+            queue!(w, MoveTo(screen_x, screen_y))?;
+        } else {
+            queue!(w, Hide)?;
         }
         w.flush()?;
         Ok(())
@@ -457,28 +457,29 @@ impl<W: Write> QwxUi<W> for Qwx {
         // 1. On dessine l'interface de base (les panneaux, le texte, etc.)
         self.base(w)?;
 
-        // 2. Calcul des dimensions (identique à ton draw_menu)
-        let max_width = 180.min(self.width);
-        let left_x = (self.width.saturating_sub(max_width)) / 2;
-        let right_x = left_x + max_width.saturating_sub(1);
-        let mid_x = left_x + (max_width / 2);
-
-        let top_y = 0; // Haut de l'écran
-        let mid_y = self.height / 2;
-
-        // 3. Déterminer la position de la barre de recherche selon le panneau actif
-        let (start_x, start_y, pane_width) = match self.focus {
-            PaneFocus::TopLeft => (left_x, top_y + 1, mid_x - left_x),
-            PaneFocus::TopRight => (mid_x + 1, top_y + 1, right_x - mid_x),
-            PaneFocus::BottomLeft => (left_x, mid_y + 1, mid_x - left_x),
-            PaneFocus::BottomRight => (mid_x + 1, mid_y + 1, right_x - mid_x),
+        let is_portrait = self.width < 130;
+        let (start_x, start_y, pane_width) = if is_portrait {
+            (1, 1, self.width.saturating_sub(2))
+        } else {
+            let max_width = 180.min(self.width);
+            let left_x = (self.width.saturating_sub(max_width)) / 2;
+            let right_x = left_x + max_width.saturating_sub(1);
+            let mid_x = left_x + (max_width / 2);
+            let top_y = 0;
+            let mid_y = self.height / 2;
+            match self.focus {
+                PaneFocus::TopLeft => (left_x, top_y + 1, mid_x - left_x),
+                PaneFocus::TopRight => (mid_x + 1, top_y + 1, right_x - mid_x),
+                PaneFocus::BottomLeft => (left_x, mid_y + 1, mid_x - left_x),
+                PaneFocus::BottomRight => (mid_x + 1, mid_y + 1, right_x - mid_x),
+            }
         };
 
-        // 4. Formater la barre de recherche avec le préfixe '/'
+        // Formater la barre de recherche avec le préfixe '/'
         let prompt = format!(" /{} ", self.search_input);
         let padded_prompt = format!("{:<width$}", prompt, width = pane_width as usize);
 
-        // 5. Afficher la barre de recherche avec les couleurs de ton thème
+        // Afficher la barre de recherche avec les couleurs de ton thème
         queue!(
             w,
             MoveTo(start_x, start_y),
@@ -497,50 +498,58 @@ impl<W: Write> QwxUi<W> for Qwx {
     }
 
     fn base(&mut self, w: &mut W) -> Result<(), Error> {
-        let max_width = 180.min(self.width);
-        let left_x = (self.width.saturating_sub(max_width)) / 2;
+        let is_portrait = self.width < 130;
 
-        let right_x = left_x + max_width.saturating_sub(1);
-        let mid_x = left_x + (max_width / 2);
+        let panes_bounds: Vec<(PaneFocus, u16, u16, u16, u16)> = if is_portrait {
+            // Portrait: only the focused panel, fullscreen
+            let p_width = self.width.saturating_sub(2);
+            let p_height = self.height.saturating_sub(2);
+            vec![(self.focus, 1, 1, p_width, p_height)]
+        } else {
+            // Landscape: classic 2x2 grid
+            let max_width = 180.min(self.width);
+            let left_x = (self.width.saturating_sub(max_width)) / 2;
+            let right_x = left_x + max_width.saturating_sub(1);
+            let mid_x = left_x + (max_width / 2);
+            let top_y = 0;
+            let bottom_y = self.height.saturating_sub(1);
+            let mid_y = self.height / 2;
 
-        let top_y = 0;
-        let bottom_y = self.height.saturating_sub(1);
-        let mid_y = self.height / 2;
+            vec![
+                (
+                    PaneFocus::TopLeft,
+                    left_x + 1,
+                    top_y + 1,
+                    (mid_x - left_x).saturating_sub(1),
+                    (mid_y - top_y).saturating_sub(1),
+                ),
+                (
+                    PaneFocus::TopRight,
+                    mid_x + 1,
+                    top_y + 1,
+                    (right_x - mid_x).saturating_sub(1),
+                    (mid_y - top_y).saturating_sub(1),
+                ),
+                (
+                    PaneFocus::BottomLeft,
+                    left_x + 1,
+                    mid_y + 1,
+                    (mid_x - left_x).saturating_sub(1),
+                    (bottom_y - mid_y).saturating_sub(1),
+                ),
+                (
+                    PaneFocus::BottomRight,
+                    mid_x + 1,
+                    mid_y + 1,
+                    (right_x - mid_x).saturating_sub(1),
+                    (bottom_y - mid_y).saturating_sub(1),
+                ),
+            ]
+        };
 
-        let panes_bounds = [
-            (
-                PaneFocus::TopLeft,
-                left_x + 1,
-                top_y + 1,
-                (mid_x - left_x).saturating_sub(1),
-                (mid_y - top_y).saturating_sub(1),
-            ),
-            (
-                PaneFocus::TopRight,
-                mid_x + 1,
-                top_y + 1,
-                (right_x - mid_x).saturating_sub(1),
-                (mid_y - top_y).saturating_sub(1),
-            ),
-            (
-                PaneFocus::BottomLeft,
-                left_x + 1,
-                mid_y + 1,
-                (mid_x - left_x).saturating_sub(1),
-                (bottom_y - mid_y).saturating_sub(1),
-            ),
-            (
-                PaneFocus::BottomRight,
-                mid_x + 1,
-                mid_y + 1,
-                (right_x - mid_x).saturating_sub(1),
-                (bottom_y - mid_y).saturating_sub(1),
-            ),
-        ];
-        // 3. Draw the content of each pane
-        for (i, &(pane_focus, start_x, start_y, p_width, p_height)) in
-            panes_bounds.iter().enumerate()
-        {
+        // Draw the content of each (visible) pane
+        for &(pane_focus, start_x, start_y, p_width, p_height) in panes_bounds.iter() {
+            let i = pane_focus as usize;
             let pane = self.panes[i];
             let is_active = self.focus == pane_focus;
             let expo = get_superscript(pane.view);
@@ -1643,12 +1652,19 @@ impl Qwx {
         let total_lines = self.editor.rope.len_lines();
 
         // 2. Calcul des dimensions de l'écran
-        let mid_y = self.height / 2;
-        let bottom_y = self.height;
-        let p_height = match self.focus {
-            PaneFocus::TopLeft | PaneFocus::TopRight => mid_y.saturating_sub(1),
-            PaneFocus::BottomLeft | PaneFocus::BottomRight => (bottom_y - mid_y).saturating_sub(1),
-        } as usize;
+        let p_height = if self.width < 130 {
+            // Portrait mode: full height
+            self.height.saturating_sub(2) as usize
+        } else {
+            let mid_y = self.height / 2;
+            let bottom_y = self.height;
+            (match self.focus {
+                PaneFocus::TopLeft | PaneFocus::TopRight => mid_y.saturating_sub(1),
+                PaneFocus::BottomLeft | PaneFocus::BottomRight => {
+                    (bottom_y - mid_y).saturating_sub(1)
+                }
+            }) as usize
+        };
 
         let pane = self.active_pane_mut();
         let mut new_scroll = pane.cursor as usize;
@@ -3257,7 +3273,7 @@ impl Qwx {
             spatial_map.insert((0, 1, 1), 0);
         }
 
-        Self {
+        let mut q = Self {
             config: c.clone(),
             keymap: build_keymap(c),
             width,
@@ -3282,7 +3298,9 @@ impl Qwx {
             back_panes: [INIT_PANE_STATE; 4],
             current_facet: Facet::Front,
             current_dir: dir_path.into(),
-        }
+        };
+        q.load_active_pane_file();
+        q
     }
 
     pub fn search_next(&mut self) {
