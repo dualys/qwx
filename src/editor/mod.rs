@@ -14,6 +14,7 @@ use crossterm::terminal::{
 use crossterm::{execute, queue};
 use inquire::Select;
 use is_executable::IsExecutable;
+use noun::Noun;
 use ropey::Rope;
 use std::collections::HashMap;
 use std::fs::{File, create_dir_all};
@@ -64,6 +65,7 @@ pub const INIT_NODE_STATE: [Node; 4] = [
         is_file: true,
         undo_stack: vec![],
         redo_stack: vec![],
+        noun: Noun::NULL,
     },
     Node {
         id: 1,
@@ -74,6 +76,7 @@ pub const INIT_NODE_STATE: [Node; 4] = [
         is_file: true,
         undo_stack: vec![],
         redo_stack: vec![],
+        noun: Noun::NULL,
     },
     Node {
         id: 2,
@@ -84,6 +87,7 @@ pub const INIT_NODE_STATE: [Node; 4] = [
         is_file: true,
         undo_stack: vec![],
         redo_stack: vec![],
+        noun: Noun::NULL,
     },
     Node {
         id: 3,
@@ -94,6 +98,7 @@ pub const INIT_NODE_STATE: [Node; 4] = [
         is_file: true,
         undo_stack: vec![],
         redo_stack: vec![],
+        noun: Noun::NULL,
     },
 ];
 /// Converts a numerical value (0-9) into its corresponding superscript Unicode character.
@@ -996,6 +1001,7 @@ pub fn qwx_load_node(id: usize, path: &Path) -> Result<Node, Error> {
         is_file,
         undo_stack: Vec::new(),
         redo_stack: Vec::new(),
+        noun: Noun::NULL,
     })
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1251,6 +1257,7 @@ pub struct Node {
     pub is_file: bool,
     pub undo_stack: Vec<EditSnapshot>,
     pub redo_stack: Vec<EditSnapshot>,
+    pub noun: Noun,
 }
 
 /// Represents the state of a pane in an application.
@@ -2171,6 +2178,15 @@ impl Qwx {
                         } else {
                             self.mode = Mode::Menu;
                             self.menu_input = ":w ".to_string();
+                        }
+                        // Scelle le Noun
+                        let focus_idx = self.focus as usize;
+                        if let Some(view) = self.views.get(focus_idx) {
+                            let node_id = view.active_node_id;
+                            if let Some(node) = self.nodes.iter_mut().find(|n| n.id == node_id) {
+                                let bytes = node.content.join("\n").into_bytes();
+                                node.noun = noun::Noun::of(&bytes);
+                            }
                         }
                     }
                     (KeyModifiers::CONTROL, KeyCode::Char('z')) => {

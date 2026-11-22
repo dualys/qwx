@@ -6,7 +6,6 @@ use crossterm::{
     terminal::size,
 };
 use is_executable::IsExecutable;
-use std::fmt::{Display, Formatter};
 use std::{
     io::{Result, Write},
     path::Path,
@@ -126,11 +125,6 @@ pub enum FinderLayout {
     Single,
 }
 
-impl Display for FinderLayout {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_string())
-    }
-}
 impl FinderLayout {
     pub fn next(&self) -> Self {
         match self {
