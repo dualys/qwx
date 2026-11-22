@@ -79,6 +79,7 @@ pub const INIT_NODE_STATE: [Node; 4] = [
         undo_stack: vec![],
         redo_stack: vec![],
         noun: Noun::NULL,
+        lba: None,
     },
     Node {
         id: 1,
@@ -90,6 +91,7 @@ pub const INIT_NODE_STATE: [Node; 4] = [
         undo_stack: vec![],
         redo_stack: vec![],
         noun: Noun::NULL,
+        lba: None,
     },
     Node {
         id: 2,
@@ -101,6 +103,7 @@ pub const INIT_NODE_STATE: [Node; 4] = [
         undo_stack: vec![],
         redo_stack: vec![],
         noun: Noun::NULL,
+        lba: None,
     },
     Node {
         id: 3,
@@ -112,6 +115,7 @@ pub const INIT_NODE_STATE: [Node; 4] = [
         undo_stack: vec![],
         redo_stack: vec![],
         noun: Noun::NULL,
+        lba: None,
     },
 ];
 /// Converts a numerical value (0-9) into its corresponding superscript Unicode character.
@@ -632,7 +636,12 @@ impl<W: Write> QwxUi<W> for Qwx {
 
                 let name_len = name.chars().count() as u16;
                 let center_x = start_x + (p_width.saturating_sub(name_len)) / 2;
-                let info_display = format!("{:03}{}", pane.workspace, expo);
+                let lba_str = if let Some(lba) = node.lba {
+                    format!(" LBA:{}", lba)
+                } else {
+                    String::new()
+                };
+                let info_display = format!("{:03}{}{}", pane.workspace, expo, lba_str);
                 let dirty_x = start_x + p_width.saturating_sub(info_display.chars().count() as u16);
                 let color = if is_active {
                     Color::Green
@@ -647,7 +656,7 @@ impl<W: Write> QwxUi<W> for Qwx {
                     MoveTo(center_x, start_y - 1),
                     Print(name),
                     MoveTo(dirty_x, start_y - 1),
-                    Print(info_display)
+                    Print(format!("{:<width$}", info_display, width = 20))
                 )?;
             }
         }
@@ -1015,6 +1024,7 @@ pub fn qwx_load_node(id: usize, path: &Path) -> Result<Node, Error> {
         undo_stack: Vec::new(),
         redo_stack: Vec::new(),
         noun: Noun::NULL,
+        lba: None,
     })
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1263,6 +1273,7 @@ pub enum PaneFocus {
 ///   Enables the `Node` struct to be cloned, creating an exact copy of the instance.
 #[derive(Default, Clone)]
 pub struct Node {
+    pub lba: Option<u64>,
     pub id: usize,
     pub name: String,
     pub ext: String,
@@ -2202,8 +2213,7 @@ impl Qwx {
                                 node.noun = noun::Noun::of(&bytes);
                                 // Alloue un LBA
                                 if let Some(lba) = self.engine.allocator.allocate_node() {
-                                    // TODO: stocker le LBA
-                                    let _ = lba;
+                                    node.lba = Some(lba);
                                 }
                             }
                         }
