@@ -1407,11 +1407,34 @@ impl Default for MusicPlayer {
     }
 }
 
+/// Play a local FLAC file using rodio + symphonia.
+fn play_local_flac(path: &std::path::Path) -> Result<(), String> {
+    use std::fs::File;
+    use std::io::BufReader;
+    use std::thread;
+
+    let path = path.to_path_buf();
+    thread::spawn(move || {
+        if let Ok(file) = File::open(&path) {
+            let reader = BufReader::new(file);
+            if let Ok((_stream, handle)) = rodio::OutputStream::try_default() {
+                if let Ok(sink) = rodio::Sink::try_new(&handle) {
+                    if let Ok(source) = rodio::Decoder::new(reader) {
+                        sink.append(source);
+                        sink.sleep_until_end();
+                    }
+                }
+            }
+        }
+    });
+    Ok(())
+}
+
 impl MusicPlayer {
     #[must_use]
     pub fn new() -> Self {
         let client = SpotifyClient::new();
-        Self {
+        let mut player = Self {
             client,
             playback: PlaybackState::default(),
             active_tab: PlayerTab::Search,
@@ -1426,10 +1449,63 @@ impl MusicPlayer {
             active_prompt: PlayerPrompt::None,
             prompt_input: String::new(),
             status_message: Some(
-                "QWX Music Player ready. Press [Tab] to switch views.".to_string(),
+                "QWX Music Player (Local mode). Press [Tab] to switch views.".to_string(),
             ),
             visualizer_tick: 0,
             last_tick_time: Instant::now(),
+        };
+        player.load_local_music();
+        player
+    }
+
+    /// Scan the user's Music directory (via dirs crate) and populate the queue with local audio files.
+    pub fn load_local_music(&mut self) {
+        let music_dir = dirs::audio_dir().or_else(dirs::home_dir);
+        if let Some(dir) = music_dir {
+            let mut tracks = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                            let ext = ext.to_lowercase();
+                            if matches!(
+                                ext.as_str(),
+                                "mp3" | "flac" | "wav" | "ogg" | "m4a" | "aac"
+                            ) {
+                                let name = path
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("unknown")
+                                    .to_string();
+                                tracks.push(TrackItem {
+                                    id: name.clone(),
+                                    name: name.clone(),
+                                    artists: vec!["Local".to_string()],
+                                    album_name: dir.display().to_string(),
+                                    duration_ms: 0,
+                                    uri: path.display().to_string(),
+                                    preview_url: None,
+                                    popularity: None,
+                                    is_playable: true,
+                                    source: AudioSource::LocalFile { path },
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            if !tracks.is_empty() {
+                self.queue = tracks;
+                self.set_status(format!(
+                    "Loaded {} local tracks from Music directory.",
+                    self.queue.len()
+                ));
+            } else {
+                self.set_status("No local audio files found in Music directory.");
+            }
+        } else {
+            self.set_status("Could not locate Music directory.");
         }
     }
 
@@ -1563,12 +1639,22 @@ impl MusicPlayer {
                     self.set_status(format!("Play error: {}", e));
                 }
             },
-            AudioSource::LocalFile { path } => {
-                self.set_status(format!(
-                    "Local playback for {:?} will be supported soon.",
-                    path.file_name().unwrap_or_default()
-                ));
-            }
+            AudioSource::LocalFile { path } => match play_local_flac(path) {
+                Ok(()) => {
+                    self.playback.is_playing = true;
+                    self.playback.item = Some(track.clone());
+                    self.playback.progress_ms = 0;
+                    self.playback.last_synced_at = Some(Instant::now());
+                    self.set_status(format!(
+                        "▶ Now Playing (FLAC): {} - {}",
+                        track.name,
+                        track.artists_str()
+                    ));
+                }
+                Err(e) => {
+                    self.set_status(format!("Local play error: {}", e));
+                }
+            },
         }
     }
 
@@ -2091,12 +2177,20 @@ impl MusicPlayer {
         }
     }
     pub fn draw_player<W: Write>(&mut self, writer: &mut W, w: u16, h: u16) -> io::Result<()> {
-        queue!(writer, ResetColor, Hide)?;
+        // Full black clear
+        queue!(
+            writer,
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+            SetBackgroundColor(Color::Black),
+            SetForegroundColor(Color::White),
+            ResetColor,
+            Hide
+        )?;
         let w_usize = w as usize;
         let h_usize = h as usize;
 
         // --- PALETTE DE COULEURS "MUSHIN" (100% Noir) ---
-        let bg_main = Color::Black;
+        let bg_main = Color::Black; // Pure black
         let fg_border = Color::White;
         let fg_accent = Color::Green;
         let fg_normal = Color::White;
@@ -2190,11 +2284,7 @@ impl MusicPlayer {
             queue!(
                 writer,
                 MoveTo(0, prompt_y),
-                SetBackgroundColor(Color::Rgb {
-                    r: 35,
-                    g: 45,
-                    b: 70
-                }),
+                SetBackgroundColor(Color::Black),
                 SetForegroundColor(Color::Rgb {
                     r: 255,
                     g: 205,
@@ -2234,7 +2324,7 @@ impl MusicPlayer {
         height: usize,
         w: usize,
     ) -> io::Result<()> {
-        let bg_main = Color::Black;
+        let bg_main = Color::Black; // Pure black
         let fg_border = Color::White;
         let fg_accent = Color::Rgb {
             r: 30,
@@ -2324,7 +2414,7 @@ impl MusicPlayer {
         height: usize,
         w: usize,
     ) -> io::Result<()> {
-        let bg_main = Color::Black;
+        let bg_main = Color::Black; // Pure black
         let bg_sel = Color::White;
         let fg_muted = Color::DarkGrey;
         let fg_normal = Color::White;
@@ -2499,7 +2589,7 @@ impl MusicPlayer {
         height: usize,
         w: usize,
     ) -> io::Result<()> {
-        let bg_main = Color::Black;
+        let bg_main = Color::Black; // Pure black
         let bg_sel = Color::White;
         let fg_muted = Color::DarkGrey;
         let fg_normal = Color::White;
@@ -2507,11 +2597,7 @@ impl MusicPlayer {
         queue!(
             writer,
             MoveTo(start_x as u16, start_y as u16),
-            SetBackgroundColor(Color::Rgb {
-                r: 18,
-                g: 24,
-                b: 38
-            }),
+            SetBackgroundColor(Color::Black),
             SetForegroundColor(fg_muted)
         )?;
         let header = format!(
@@ -2565,7 +2651,7 @@ impl MusicPlayer {
         height: usize,
         w: usize,
     ) -> io::Result<()> {
-        let bg_main = Color::Black;
+        let bg_main = Color::Black; // Pure black
         let bg_sel = Color::White;
         let fg_muted = Color::DarkGrey;
         let fg_normal = Color::White;
@@ -2573,11 +2659,7 @@ impl MusicPlayer {
         queue!(
             writer,
             MoveTo(start_x as u16, start_y as u16),
-            SetBackgroundColor(Color::Rgb {
-                r: 18,
-                g: 24,
-                b: 38
-            }),
+            SetBackgroundColor(Color::Black),
             SetForegroundColor(fg_muted)
         )?;
         let header = " Playlists & Featured Collections │ [Enter] Play Context │ [r] Reload";
@@ -2629,7 +2711,7 @@ impl MusicPlayer {
         height: usize,
         w: usize,
     ) -> io::Result<()> {
-        let bg_main = Color::Black;
+        let bg_main = Color::Black; // Pure black
         let bg_sel = Color::Green;
         let fg_normal = Color::White;
         queue!(
@@ -2699,7 +2781,7 @@ impl MusicPlayer {
         height: usize,
         w: usize,
     ) -> io::Result<()> {
-        let bg_main = Color::Black;
+        let bg_main = Color::Black; // Pure black
         let bg_sel = Color::White;
         let fg_muted = Color::DarkGrey;
         let fg_cyan = Color::Rgb {
@@ -2793,7 +2875,7 @@ impl MusicPlayer {
         right_start_x: usize,
         w: usize,
     ) -> io::Result<()> {
-        let bg_main = Color::Black;
+        let bg_main = Color::Black; // Pure black
         let fg_border = Color::White;
         let fg_muted = Color::DarkGrey;
 

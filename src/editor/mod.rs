@@ -557,18 +557,14 @@ impl<W: Write> QwxUi<W> for Qwx {
             let (percentage_str, current_line, total_lines) = if let Some(view) = self.views.get(i)
                 && let Some(node) = self.nodes.iter().find(|n| n.id == view.active_node_id)
             {
+                let total_lines = node.content.len().max(1);
                 let cur = if is_active && (self.mode == Mode::Editor || self.mode == Mode::Normal) {
-                    self.editor.cursor_line + 1
+                    (self.editor.cursor_line + 1).min(total_lines)
                 } else {
-                    pane.cursor as usize + 1
+                    ((pane.cursor as usize) + 1).min(total_lines)
                 };
-                let len = node.content.len();
-                let pct = if len >= 1 {
-                    ((cur * 100) / (len)).min(100)
-                } else {
-                    100
-                };
-                (pct, cur, len)
+                let pct = ((cur * 100) / total_lines).min(100);
+                (pct, cur, total_lines)
             } else {
                 (0, 0, 0)
             };
@@ -825,7 +821,7 @@ impl QwxPanel for Qwx {
                 let safe_line = (pane.cursor as usize).min(total_lines.saturating_sub(1));
                 ed.cursor_line = safe_line;
 
-                let line_len_chars = ed.rope.line(safe_line).len_chars();
+                let line_len_chars = ed.safe_line(safe_line).len_chars();
                 let safe_col = (pane.cursor_col as usize).min(line_len_chars.saturating_sub(1));
                 ed.cursor_col = safe_col;
 
@@ -1703,13 +1699,14 @@ impl Qwx {
                     Action::MoveDown => {
                         let total_lines = self.editor.rope.len_lines();
                         if self.editor.cursor_line + 1 < total_lines {
-                            self.editor.cursor_line += 1;
+                            self.editor.cursor_line = (self.editor.cursor_line + 1)
+                                .min(self.editor.rope.len_lines().saturating_sub(1));
                         }
                         self.follow();
                     }
                     Action::MoveUp => {
                         if self.editor.cursor_line > 0 {
-                            self.editor.cursor_line -= 1;
+                            self.editor.cursor_line = self.editor.cursor_line.saturating_sub(1);
                         }
                         self.follow();
                     }
@@ -1717,13 +1714,17 @@ impl Qwx {
                         let max_col = self
                             .editor
                             .rope
-                            .line(self.editor.cursor_line)
+                            .line(
+                                self.editor
+                                    .cursor_line
+                                    .min(self.editor.rope.len_lines().saturating_sub(1)),
+                            )
                             .len_chars()
                             .saturating_sub(1);
                         if self.editor.cursor_col < max_col {
                             self.editor.cursor_col -= 1;
                         } else if self.editor.cursor_line + 1 < self.editor.rope.len_lines() {
-                            self.editor.cursor_line -= 1;
+                            self.editor.cursor_line = self.editor.cursor_line.saturating_sub(1);
                             self.editor.cursor_col = 0;
                         }
                         self.follow();
@@ -1732,11 +1733,16 @@ impl Qwx {
                         if self.editor.cursor_col > 0 {
                             self.editor.cursor_col += 1;
                         } else if self.editor.cursor_line > 0 {
-                            self.editor.cursor_line += 1;
+                            self.editor.cursor_line = (self.editor.cursor_line + 1)
+                                .min(self.editor.rope.len_lines().saturating_sub(1));
                             self.editor.cursor_col = self
                                 .editor
                                 .rope
-                                .line(self.editor.cursor_line)
+                                .line(
+                                    self.editor
+                                        .cursor_line
+                                        .min(self.editor.rope.len_lines().saturating_sub(1)),
+                                )
                                 .len_chars()
                                 .saturating_sub(1);
                         }
@@ -1934,7 +1940,11 @@ impl Qwx {
                         let max_col = self
                             .editor
                             .rope
-                            .line(self.editor.cursor_line)
+                            .line(
+                                self.editor
+                                    .cursor_line
+                                    .min(self.editor.rope.len_lines().saturating_sub(1)),
+                            )
                             .len_chars()
                             .saturating_sub(1);
                         self.editor.cursor_col = max_col;
@@ -1964,7 +1974,11 @@ impl Qwx {
                         let max_col = self
                             .editor
                             .rope
-                            .line(self.editor.cursor_line)
+                            .line(
+                                self.editor
+                                    .cursor_line
+                                    .min(self.editor.rope.len_lines().saturating_sub(1)),
+                            )
                             .len_chars()
                             .saturating_sub(1);
                         self.editor.cursor_col = self.editor.cursor_col.min(max_col);
@@ -3836,6 +3850,13 @@ pub struct Ji {
 }
 
 impl Ji {
+    /// Safe line access — never panics.
+    fn safe_line(&self, line: usize) -> ropey::RopeSlice<'_> {
+        let max = self.rope.len_lines().saturating_sub(1);
+        let safe = line.min(max);
+        self.rope.line(safe)
+    }
+
     /// Records the current state onto the undo stack and clears the redo stack.
     pub fn record_undo(&mut self) {
         if self.undo_stack.len() >= 100 {
@@ -3894,12 +3915,12 @@ impl Ji {
             let mut s = String::new();
             for line_idx in start..=end.min(self.rope.len_lines().saturating_sub(1)) {
                 if line_idx < self.rope.len_lines() {
-                    s.push_str(&self.rope.line(line_idx).to_string());
+                    s.push_str(&self.safe_line(line_idx).to_string());
                 }
             }
             s
         } else if self.cursor_line < self.rope.len_lines() {
-            self.rope.line(self.cursor_line).to_string()
+            self.safe_line(self.cursor_line).to_string()
         } else {
             return None;
         };
@@ -4163,7 +4184,7 @@ impl Ji {
 
         if target_char == '\n' {
             start_point.row -= 1;
-            start_point.column = self.rope.line(start_point.row).len_chars() - 1;
+            start_point.column = self.safe_line(start_point.row).len_chars() - 1;
         } else {
             start_point.column -= 1;
         }
