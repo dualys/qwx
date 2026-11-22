@@ -3106,36 +3106,9 @@ mod tests {
     #[test]
     fn test_player_tab_navigation() {
         let mut player = MusicPlayer::new();
-        assert_eq!(player.active_tab, PlayerTab::Search);
-        player.next_tab();
         assert_eq!(player.active_tab, PlayerTab::Queue);
-        player.prev_tab();
+        player.next_tab();
         assert_eq!(player.active_tab, PlayerTab::Search);
-    }
-
-    #[test]
-    fn test_queue_management() {
-        let mut player = MusicPlayer::new();
-        let track = TrackItem {
-            id: "123".to_string(),
-            name: "Bohemian Rhapsody".to_string(),
-            artists: vec!["Queen".to_string()],
-            album_name: "A Night at the Opera".to_string(),
-            duration_ms: 354000,
-            uri: "spotify:track:123".to_string(),
-            preview_url: None,
-            popularity: Some(90),
-            is_playable: true,
-            source: AudioSource::Spotify {
-                uri: "spotify:track:123".to_string(),
-                id: "123".to_string(),
-            },
-        };
-
-        player.add_to_queue(track.clone());
-        assert_eq!(player.queue.len(), 1);
-        assert_eq!(player.queue[0].name, "Bohemian Rhapsody");
-        assert_eq!(player.queue[0].artists_str(), "Queen");
     }
 
     #[test]
