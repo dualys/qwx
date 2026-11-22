@@ -2959,6 +2959,136 @@ impl MusicPlayer {
         )?;
         Ok(())
     }
+    /// Clean black local player (portrait + landscape).
+    pub fn draw_local_player<W: Write>(
+        &mut self,
+        writer: &mut W,
+        w: u16,
+        h: u16,
+    ) -> io::Result<()> {
+        queue!(
+            writer,
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+            SetBackgroundColor(Color::Black),
+            SetForegroundColor(Color::White),
+            Hide
+        )?;
+
+        let portrait = w < 100 || w < h;
+        if portrait {
+            self.draw_portrait_local(writer, w, h)?;
+        } else {
+            self.draw_landscape_local(writer, w, h)?;
+        }
+        writer.flush()?;
+        Ok(())
+    }
+
+    fn draw_portrait_local<W: Write>(&self, writer: &mut W, w: u16, h: u16) -> io::Result<()> {
+        queue!(
+            writer,
+            MoveTo((w.saturating_sub(12)) / 2, 0),
+            SetForegroundColor(Color::Green),
+            Print("QWX LOCAL"),
+            SetForegroundColor(Color::White)
+        )?;
+
+        let max_items = (h as usize).saturating_sub(4);
+        for (i, track) in self.queue.iter().enumerate().take(max_items) {
+            let y = 2 + i as u16;
+            let sel = i == self.selected_index;
+            let prefix = if sel { "▶ " } else { "  " };
+            let name = track
+                .name
+                .chars()
+                .take((w as usize).saturating_sub(4))
+                .collect::<String>();
+            if sel {
+                queue!(
+                    writer,
+                    SetBackgroundColor(Color::White),
+                    SetForegroundColor(Color::Black)
+                )?;
+            }
+            queue!(
+                writer,
+                MoveTo(1, y),
+                Print(format!("{}{}", prefix, name)),
+                ResetColor
+            )?;
+        }
+
+        let status = format!(" {} tracks ", self.queue.len());
+        queue!(
+            writer,
+            MoveTo(0, h.saturating_sub(1)),
+            SetForegroundColor(Color::DarkGrey),
+            Print(&status)
+        )?;
+        Ok(())
+    }
+
+    fn draw_landscape_local<W: Write>(&self, writer: &mut W, w: u16, h: u16) -> io::Result<()> {
+        let mid = w / 2;
+        queue!(
+            writer,
+            MoveTo(2, 1),
+            SetForegroundColor(Color::Green),
+            Print("QUEUE"),
+            SetForegroundColor(Color::White)
+        )?;
+
+        let max_items = (h as usize).saturating_sub(5);
+        for (i, track) in self.queue.iter().enumerate().take(max_items) {
+            let y = 3 + i as u16;
+            let sel = i == self.selected_index;
+            let prefix = if sel { "▶ " } else { "  " };
+            let name = track
+                .name
+                .chars()
+                .take((mid as usize).saturating_sub(6))
+                .collect::<String>();
+            if sel {
+                queue!(
+                    writer,
+                    SetBackgroundColor(Color::White),
+                    SetForegroundColor(Color::Black)
+                )?;
+            }
+            queue!(
+                writer,
+                MoveTo(1, y),
+                Print(format!("{}{}", prefix, name)),
+                ResetColor
+            )?;
+        }
+
+        queue!(
+            writer,
+            MoveTo(mid + 2, 1),
+            SetForegroundColor(Color::Green),
+            Print("NOW PLAYING"),
+            SetForegroundColor(Color::White)
+        )?;
+
+        if let Some(cur) = &self.playback.item {
+            queue!(writer, MoveTo(mid + 2, 3), Print(&cur.name))?;
+            queue!(
+                writer,
+                MoveTo(mid + 2, 4),
+                SetForegroundColor(Color::DarkGrey),
+                Print(&cur.artists_str())
+            )?;
+        } else {
+            queue!(
+                writer,
+                MoveTo(mid + 2, 3),
+                SetForegroundColor(Color::DarkGrey),
+                Print("Nothing playing")
+            )?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

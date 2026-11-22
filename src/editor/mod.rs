@@ -164,7 +164,7 @@ pub trait QwxUi<W: Write> {
     fn draw_normal(&mut self, w: &mut W) -> Result<(), Error>;
     fn draw_finder(&mut self, w: &mut W) -> Result<(), Error>;
     fn draw_spotify_player(&mut self, w: &mut W) -> Result<(), Error>;
-    fn draw_local_player(&mut self, w: &mut W) -> Result<(), Error>;
+    fn draw_player(&mut self, w: &mut W) -> Result<(), Error>;
     fn draw_web(&mut self, w: &mut W) -> Result<(), Error>;
     fn draw_menu(&mut self, w: &mut W) -> Result<(), Error>;
     fn draw_editor(&mut self, w: &mut W) -> Result<(), Error>;
@@ -343,11 +343,11 @@ impl<W: Write> QwxUi<W> for Qwx {
         )
     }
     fn draw_spotify_player(&mut self, w: &mut W) -> Result<(), Error> {
-        self.player.draw_player(w, self.width, self.height)?;
+        self.player.draw_local_player(w, self.width, self.height)?;
         Ok(())
     }
-    fn draw_local_player(&mut self, w: &mut W) -> Result<(), Error> {
-        self.player.draw_player(w, self.width, self.height)?;
+    fn draw_player(&mut self, w: &mut W) -> Result<(), Error> {
+        self.player.draw_local_player(w, self.width, self.height)?;
         Ok(())
     }
 
