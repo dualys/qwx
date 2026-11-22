@@ -1,6 +1,7 @@
 use crossterm::style::Color;
 
 pub const FG_DEFAULT: Color = Color::White;
+pub const BG_BLACK: Color = Color::Rgb { r: 0, g: 0, b: 0 };
 
 // --- PALETTE DU FINDER ---
 pub const FINDER_BORDER: Color = Color::White;
@@ -9,8 +10,6 @@ pub const FINDER_TEXT_MUTED: Color = Color::White;
 pub const FINDER_DIR_COLOR: Color = Color::Blue;
 pub const FINDER_FILE_COLOR: Color = Color::White;
 pub const FINDER_ACTIVE_SELECT: Color = Color::White;
-// Le violet cosmique pour la sélection active
-// ✨ Nouvelles couleurs pour la palette :
 pub const CONSTANTS: Color = Color::Rgb {
     r: 230,
     g: 190,
@@ -66,13 +65,7 @@ const NUMBERS: Color = Color::Rgb {
     b: 120,
 };
 
-// --- PALETTE DE L'INTERFACE ---
-// Une teinte abyssale pour les bordures inactives, pour qu'elles se fondent dans le décor
-pub const UI_BORDER_INACTIVE: Color = Color::Rgb {
-    r: 35,
-    g: 40,
-    b: 55,
-};
+pub const UI_BORDER_INACTIVE: Color = Color::Rgb { r: 0, g: 0, b: 0 };
 
 // Un violet cosmique très doux pour mettre en valeur le panneau actif sans agresser l'œil
 pub const UI_BORDER_ACTIVE: Color = Color::Rgb {
@@ -89,16 +82,8 @@ pub const UI_TEXT_MUTED: Color = Color::Rgb {
 };
 
 // Pour la barre Menu : un fond sombre et un texte clair, fini le vert fluo !
-pub const UI_DMENU_BG: Color = Color::Rgb {
-    r: 45,
-    g: 50,
-    b: 70,
-};
-pub const UI_DMENU_FG: Color = Color::Rgb {
-    r: 220,
-    g: 225,
-    b: 240,
-};
+pub const UI_DMENU_BG: Color = Color::Rgb { r: 0, g: 255, b: 0 };
+pub const UI_DMENU_FG: Color = Color::Rgb { r: 0, g: 0, b: 0 };
 
 pub fn get_color_for_capture(capture_name: &str) -> Color {
     match capture_name {
