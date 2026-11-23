@@ -1,11 +1,11 @@
 [package]
 name = "qwx"
-version = "0.0.3"
+version = "0.1.0"
 edition = "2024"
 description = "Quaternary Walk Extended"
 license = "AGPL-3.0-or-later"
-repository = "https://github.com/kognitara/qwx.git"
-authors = ["Micieli Willy"]
+repository = "https://github.com/dualys/qwx.git"
+authors = ["Hackia <hackia@hackia.org>"]
 
 [profile.release]
 opt-level = 3       # Optimisation maximale pour la vitesse (remplace "z")
