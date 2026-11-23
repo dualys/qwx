@@ -21,6 +21,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use walkdir::WalkDir;
 
 /// Audio Source for playback: Spotify streaming URI or local file on disk.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1461,32 +1462,33 @@ impl MusicPlayer {
         let music_dir = dirs::audio_dir().or_else(dirs::home_dir);
         if let Some(dir) = music_dir {
             let mut tracks = Vec::new();
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file()
-                        && let Some(ext) = path.extension().and_then(|e| e.to_str())
-                    {
-                        let ext = ext.to_lowercase();
-                        if matches!(ext.as_str(), "mp3" | "flac" | "wav" | "ogg" | "m4a" | "aac") {
-                            let name = path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("unknown")
-                                .to_string();
-                            tracks.push(TrackItem {
-                                id: name.clone(),
-                                name: name.clone(),
-                                artists: vec!["Local".to_string()],
-                                album_name: dir.display().to_string(),
-                                duration_ms: 0,
-                                uri: path.display().to_string(),
-                                preview_url: None,
-                                popularity: None,
-                                is_playable: true,
-                                source: AudioSource::LocalFile { path },
-                            });
-                        }
+            let x = WalkDir::new(&dir);
+            for entry in x.into_iter().flatten() {
+                let path = entry.path();
+                if path.is_file()
+                    && let Some(ext) = path.extension().and_then(|e| e.to_str())
+                {
+                    let ext = ext.to_lowercase();
+                    if matches!(ext.as_str(), "mp3" | "flac" | "wav" | "ogg" | "m4a" | "aac") {
+                        let name = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+                        tracks.push(TrackItem {
+                            id: name.clone(),
+                            name: name.clone(),
+                            artists: vec!["Local".to_string()],
+                            album_name: dir.display().to_string(),
+                            duration_ms: 0,
+                            uri: path.display().to_string(),
+                            preview_url: None,
+                            popularity: None,
+                            is_playable: true,
+                            source: AudioSource::LocalFile {
+                                path: path.to_path_buf(),
+                            },
+                        });
                     }
                 }
             }
