@@ -289,8 +289,7 @@ impl<W: Write> QwxUi<W> for Qwx {
     fn draw_normal(&mut self, w: &mut W) -> Result<(), Error> {
         self.base(w)?;
         queue!(w, Show, SetCursorStyle::BlinkingUnderScore)?;
-        let is_portrait = self.width < self.height;
-        let (start_x, start_y, p_width, p_height) = if is_portrait {
+        let (start_x, start_y, p_width, p_height) = if self.is_portrait {
             (
                 1,
                 1,
@@ -379,8 +378,7 @@ impl<W: Write> QwxUi<W> for Qwx {
 
     fn draw_menu(&mut self, w: &mut W) -> Result<(), Error> {
         self.base(w)?;
-        let is_portrait = self.width < self.height;
-        let (start_x, start_y, pane_width) = if is_portrait {
+        let (start_x, start_y, pane_width) = if self.is_portrait {
             (1, 1, self.width.saturating_sub(2))
         } else {
             let max_width = 180.min(self.width);
@@ -414,8 +412,7 @@ impl<W: Write> QwxUi<W> for Qwx {
         self.base(w)?;
         queue!(w, Show, SetCursorStyle::SteadyBlock)?;
 
-        let is_portrait = self.width < self.height;
-        let (start_x, start_y, p_width, p_height) = if is_portrait {
+        let (start_x, start_y, p_width, p_height) = if self.is_portrait {
             (
                 1,
                 1,
@@ -478,8 +475,7 @@ impl<W: Write> QwxUi<W> for Qwx {
         // 1. On dessine l'interface de base (les panneaux, le texte, etc.)
         self.base(w)?;
 
-        let is_portrait = self.width < self.height;
-        let (start_x, start_y, pane_width) = if is_portrait {
+        let (start_x, start_y, pane_width) = if self.is_portrait {
             (1, 1, self.width.saturating_sub(2))
         } else {
             let max_width = 180.min(self.width);
@@ -519,9 +515,7 @@ impl<W: Write> QwxUi<W> for Qwx {
     }
 
     fn base(&mut self, w: &mut W) -> Result<(), Error> {
-        let is_portrait = self.width < self.height;
-
-        let panes_bounds: Vec<(PaneFocus, u16, u16, u16, u16)> = if is_portrait {
+        let panes_bounds: Vec<(PaneFocus, u16, u16, u16, u16)> = if self.is_portrait {
             // Portrait: only the focused panel, fullscreen
             let p_width = self.width.saturating_sub(2);
             let p_height = self.height.saturating_sub(2);
@@ -1083,6 +1077,7 @@ pub struct Qwx {
     pub last_search_query: Option<String>,
     pub search_hub: SearchHub,
     pub player: MusicPlayer,
+    pub is_portrait: bool,
 }
 
 impl AsMut<Qwx> for Qwx {
@@ -3297,7 +3292,7 @@ impl Qwx {
     }
     /// Creates a new instance of the editor with the specified path and open mode.
     pub fn new(path: &Path, open_mode: Mode, c: &QwxConfig) -> Self {
-        let (height, width) = size().expect("failed to get size");
+        let (width, height) = size().expect("failed to get size");
 
         let (dir_path, target_file) = if path.is_file() {
             (path.parent().unwrap_or_else(|| Path::new(".")), Some(path))
@@ -3332,6 +3327,7 @@ impl Qwx {
                 search_hub: SearchHub::default(),
                 player: MusicPlayer::default(),
                 engine: StorageEngine::new(1024, &MOCK_DEVICE),
+                is_portrait: width < height.saturating_mul(2),
             };
         }
         let mut nodes: Vec<Node> = Vec::new();
@@ -3404,6 +3400,7 @@ impl Qwx {
             current_facet: Facet::Front,
             current_dir: dir_path.into(),
             engine: StorageEngine::new(1024, &MOCK_DEVICE),
+            is_portrait: width < height.saturating_mul(2),
         };
         q.load_active_pane_file();
         q
