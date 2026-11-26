@@ -202,7 +202,6 @@ pub trait QwxUi<W: Write> {
     fn draw(&mut self, w: &mut W) -> Result<(), Error>;
     fn draw_normal(&mut self, w: &mut W) -> Result<(), Error>;
     fn draw_finder(&mut self, w: &mut W) -> Result<(), Error>;
-    fn draw_spotify_player(&mut self, w: &mut W) -> Result<(), Error>;
     fn draw_player(&mut self, w: &mut W) -> Result<(), Error>;
     fn draw_web(&mut self, w: &mut W) -> Result<(), Error>;
     fn draw_menu(&mut self, w: &mut W) -> Result<(), Error>;
@@ -222,7 +221,7 @@ impl<W: Write> QwxUi<W> for Qwx {
             Mode::Editor => self.draw_editor(w),
             Mode::Search => self.draw_search(w),
             Mode::WebSearch => self.draw_web(w),
-            Mode::Player => self.draw_spotify_player(w),
+            Mode::Player => self.draw_player(w),
             Mode::Help => self.draw_help(w),
             Mode::Zen | Mode::Fusion | Mode::Rescue | Mode::Broadcast | Mode::Ephemeral => Ok(()),
         }
@@ -379,7 +378,7 @@ impl<W: Write> QwxUi<W> for Qwx {
             self.height,
         )
     }
-    fn draw_spotify_player(&mut self, w: &mut W) -> Result<(), Error> {
+    fn draw_player(&mut self, w: &mut W) -> Result<(), Error> {
         if let Some(player) = &mut self.player {
             player.draw_local_player(w, self.width, self.height)
         } else {
@@ -398,10 +397,6 @@ impl<W: Write> QwxUi<W> for Qwx {
             w.flush()
         }
     }
-    fn draw_player(&mut self, w: &mut W) -> Result<(), Error> {
-        self.draw_spotify_player(w)
-    }
-
     fn draw_web(&mut self, w: &mut W) -> Result<(), Error> {
         self.search_hub.draw(w, 0, 0, self.width, self.height)?;
         Ok(())
@@ -1635,17 +1630,20 @@ impl Qwx {
     fn poll_player_loader(&mut self) {
         while let Some(loader) = &self.player_loader {
             match loader.try_recv() {
-                Ok(PlayerLoadEvent::Ready(client)) => {
-                    let mut player = MusicPlayer::with_client(client);
-                    player.refresh_playback_in_background();
-                    self.player = Some(player);
+                Ok(PlayerLoadEvent::Ready) => {
+                    self.player = Some(MusicPlayer::new());
+                }
+                Ok(PlayerLoadEvent::Playlist(result)) => {
+                    if let Some(player) = &mut self.player {
+                        player.apply_playlist(result);
+                    }
                 }
                 Ok(PlayerLoadEvent::Library(result)) => {
                     if let Some(player) = &mut self.player {
                         match result {
                             Ok(library) => player.apply_library(library),
                             Err(error) => {
-                                player.set_status(format!("Music library error: {error}"))
+                                player.set_library_status(format!("Music library error: {error}"))
                             }
                         }
                     }
@@ -2290,7 +2288,6 @@ impl Qwx {
                             break;
                         } else if self.menu_input.trim() == ":player"
                             || self.menu_input.trim() == ":music"
-                            || self.menu_input.trim() == ":spotify"
                         {
                             self.mode = Mode::Player;
                             self.menu_input.clear();
@@ -3283,11 +3280,7 @@ impl Qwx {
         self.reset(w).expect("failed to reset");
         loop {
             self.poll_player_loader();
-            if let Some(player) = &mut self.player {
-                player.poll_playback_refresh();
-            }
-            self.draw_spotify_player(w)
-                .expect("failed to draw spotify player");
+            self.draw_player(w).expect("failed to draw music player");
             if poll(std::time::Duration::from_millis(100)).unwrap_or(false) {
                 match read().expect("failed to get terminal input") {
                     Event::Key(key) => {

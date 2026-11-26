@@ -1,19 +1,11 @@
-//! # QWX Music & Spotify Player Module
-//!
-//! Terminal Music Player with full Spotify Web API integration and extensible local disk audio playback architecture.
-//!
-//! Features:
-//! - Spotify Web API client (Search, Playback control, Devices, Playlists, Tracks, Albums, Queue).
-//! - Authentication via OAuth User Access Token or Client Credentials.
-//! - Playback controls: Play, Pause, Next, Previous, Seek, Volume, Shuffle, Repeat.
-//! - Spotify Connect device discovery and playback transfer.
-//! - Terminal UI with multiple tabs: Now Playing, Search, Queue, Devices, Playlists, Settings.
-//! - Live audio visualizer / ASCII waveform rendering.
-//! - Extensible `AudioSource` design ready for local file playback (MP3/FLAC/WAV/OGG).
+//! Local music player and background library indexing.
 
+mod playback;
+
+use self::playback::{Command as PlaybackCommand, Playback, Repeat};
 use blake3::Hasher;
 use crossterm::cursor::{Hide, MoveTo};
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyModifiers, MediaKeyCode};
 use crossterm::queue;
 use crossterm::style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor};
 use crossterm::terminal::{Clear, ClearType};
@@ -21,1369 +13,16 @@ use kpack::{Opcode, execute};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Write};
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
     mpsc::{self, Receiver, TryRecvError},
 };
 use std::thread;
-use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use walkdir::WalkDir;
 
-/// Audio Source for playback: Spotify streaming URI or local file on disk.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AudioSource {
-    Spotify { uri: String, id: String },
-    LocalFile { path: PathBuf },
-}
-
-/// Represents a track item containing detailed metadata about a music track.
-///
-/// # Fields
-///
-/// - `id`
-///   The unique identifier for the track. Typically provided by the source service.
-///
-/// - `name`
-///   The name or title of the track.
-///
-/// - `artists`
-///   A list of artist names associated with the track.
-///
-/// - `album_name`
-///   The name of the album the track belongs to.
-///
-/// - `duration_ms`
-///   The duration of the track in milliseconds.
-///
-/// - `uri`
-///   The Uniform Resource Identifier (URI) pointing to the track. This is used to uniquely identify and locate the track within the source service.
-///
-/// - `preview_url`
-///   An optional field containing a URL to a preview snippet of the track, if available.
-///
-/// - `popularity`
-///   An optional field representing the track's popularity as a numeric score. The range and meaning of this value depend on the source service.
-///
-/// - `is_playable`
-///   A boolean indicating whether the track is playable by the service.
-///
-/// - `source`
-///   The source of the audio, represented by the `AudioSource` enum or struct. This typically identifies the origin of the track.
-///
-/// # Traits
-///
-/// - `Debug`: Allows instances of `TrackItem` to be formatted using the `{:?}` formatter.
-/// - `Clone`: Enables the `TrackItem` to be cloned, creating an independent copy.
-/// - `PartialEq`: Supports equality comparisons between two `TrackItem` instances.
-/// - `Eq`: Specifies that `TrackItem` implements reflexive equality.
-/// - `Serialize`: Allows the `TrackItem` to be serialized (used for converting the struct to formats like JSON).
-/// - `Deserialize`: Allows the `TrackItem` to be deserialized (used for reconstructing the struct from serialized formats).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrackItem {
-    pub id: String,
-    pub name: String,
-    pub artists: Vec<String>,
-    pub album_name: String,
-    pub duration_ms: u64,
-    pub uri: String,
-    pub preview_url: Option<String>,
-    pub popularity: Option<u32>,
-    pub is_playable: bool,
-    pub source: AudioSource,
-}
-
-impl TrackItem {
-    /// Returns a string representation of the artists associated with the object.
-    ///
-    /// If the `artists` collection is empty, the method returns `"Unknown Artist"`.
-    /// Otherwise, it joins the artist names with a comma separator and returns the resulting string.
-    ///
-    /// # Returns
-    /// - A `String` containing either "Unknown Artist" if no artists are present, or
-    ///   a comma-separated list of artist names.
-    pub fn artists_str(&self) -> String {
-        if self.artists.is_empty() {
-            "Unknown Artist".to_string()
-        } else {
-            self.artists.join(", ")
-        }
-    }
-    /// Formats the duration of the track in a human-readable format.
-    pub fn formatted_duration(&self) -> String {
-        format_duration_ms(self.duration_ms)
-    }
-}
-
-/// A struct representing an item on an album, containing metadata and details about the album.
-///
-/// # Fields
-///
-/// * `id` - A unique identifier for the album item.
-/// * `name` - The name of the album.
-/// * `artists` - A list of artist names associated with the album.
-/// * `release_date` - The release date of the album, represented as a string.
-/// * `total_tracks` - The total number of tracks on the album.
-/// * `uri` - A uniform resource identifier (URI) for the album, typically used for linking.
-///
-/// # Traits
-///
-/// This struct derives the following traits:
-/// * `Debug` - Enables formatting the struct using `{:?}` for debugging purposes.
-/// * `Clone` - Allows the struct to be cloned, creating a duplicate with the same data.
-/// * `PartialEq` - Enables comparison for equality between two `AlbumItem` instances.
-/// * `Eq` - Ensures strict equality comparison for `AlbumItem`.
-/// * `Serialize` - Allows the struct to be serialized into formats like JSON or binary.
-/// * `Deserialize` - Allows the struct to be deserialized from formats like JSON or binary.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AlbumItem {
-    pub id: String,
-    pub name: String,
-    pub artists: Vec<String>,
-    pub release_date: String,
-    pub total_tracks: u32,
-    pub uri: String,
-}
-
-impl AlbumItem {
-    pub fn artists_str(&self) -> String {
-        if self.artists.is_empty() {
-            "Various Artists".to_string()
-        } else {
-            self.artists.join(", ")
-        }
-    }
-}
-
-/// Represents an item in a playlist.
-///
-/// This struct is used to model the data for a single item within a playlist, including its
-/// identifying attributes and metadata. It is designed to be serializable and deserializable,
-/// allowing for easy storage and transfer of playlist item data.
-///
-/// # Fields
-/// - `id` (`String`): A unique identifier for the playlist item.
-/// - `name` (`String`): The name of the playlist item.
-/// - `description` (`String`): A brief description of the playlist item.
-/// - `owner_name` (`String`): The name of the owner or creator of the playlist item.
-/// - `total_tracks` (`u32`): The total number of tracks in the playlist.
-/// - `uri` (`String`): A URI (Uniform Resource Identifier) that uniquely identifies the playlist item.
-///
-/// # Traits Implemented
-/// - `Debug`: Enables formatted output and debugging capabilities.
-/// - `Clone`: Allows for creating deep copies of `PlaylistItem`.
-/// - `PartialEq`: Enables comparison of two `PlaylistItem` objects for equality.
-/// - `Eq`: Ensures strict equality comparison.
-/// - `Serialize`: Allows the struct to be converted into a format suitable for storage or communication.
-/// - `Deserialize`: Allows the struct to be reconstructed from serialized data.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PlaylistItem {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub owner_name: String,
-    pub total_tracks: u32,
-    pub uri: String,
-}
-
-///
-/// `DeviceItem` is a data structure that represents a device with its associated metadata.
-/// It implements the `Debug`, `Clone`, `PartialEq`, `Eq`, `Serialize`, and `Deserialize` traits,
-/// allowing for easy debugging, cloning, data comparison, and serialization/deserialization.
-///
-/// # Fields
-///
-/// * `id` (`String`): A unique identifier for the device.
-///
-/// * `is_active` (`bool`): Indicates whether the device is currently active.
-///
-/// * `is_restricted` (`bool`): Indicates whether the device is restricted or unavailable for certain actions.
-///
-/// * `name` (`String`): The human-readable name of the device.
-///
-/// * `device_type` (`String`): The type or category of the device (e.g., "Smartphone", "Speaker").
-///
-/// * `volume_percent` (`Option<u32>`): The current volume level of the device as a percentage (0-100).
-///   If `None`, the volume level is unknown or not applicable.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeviceItem {
-    pub id: String,
-    pub is_active: bool,
-    pub is_restricted: bool,
-    pub name: String,
-    pub device_type: String,
-    pub volume_percent: Option<u32>,
-}
-
-/// Represents the playback state of a media player, including information about the currently playing track,
-/// player settings, and playback progress.
-///
-/// # Fields
-///
-/// * `is_playing` - A boolean indicating whether the media is currently playing (`true`) or paused (`false`).
-/// * `progress_ms` - The current playback position in milliseconds.
-/// * `item` - An `Option` containing the currently playing track as a `TrackItem`. If no track is playing, this will be `None`.
-/// * `device` - An `Option` containing the device information as a `DeviceItem` on which playback is occurring. If no device is active, this will be `None`.
-/// * `shuffle_state` - A boolean indicating whether shuffle mode is enabled (`true`) or disabled (`false`).
-/// * `repeat_state` - A `RepeatMode` enum value representing the current repeat setting (e.g., off, track, or context).
-/// * `volume_percent` - The volume level of the playback device as a percentage (0 to 100).
-/// * `last_synced_at` - An `Option` containing the `Instant` when the playback state was last synced. This field is not serialized/deserialized as it is marked with `#[serde(skip)]`.
-///
-/// # Derives
-///
-/// The struct derives the following traits:
-///
-/// * `Debug` - Allows the struct to be formatted using the `{:?}` formatter for debugging purposes.
-/// * `Clone` - Enables cloning of the struct for creating copies.
-/// * `Serialize` - Enables serialization of the struct into formats such as JSON.
-/// * `Deserialize` - Enables deserialization of the struct from serialized formats.
-///
-/// This struct is typically used to encapsulate the state of a media player's playback session, useful for tracking
-/// and controlling playback in applications.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlaybackState {
-    pub is_playing: bool,
-    pub progress_ms: u64,
-    pub item: Option<TrackItem>,
-    pub device: Option<DeviceItem>,
-    pub shuffle_state: bool,
-    pub repeat_state: RepeatMode,
-    pub volume_percent: u32,
-    #[serde(skip)]
-    pub last_synced_at: Option<Instant>,
-}
-
-impl Default for PlaybackState {
-    fn default() -> Self {
-        Self {
-            is_playing: false,
-            progress_ms: 0,
-            item: None,
-            device: None,
-            shuffle_state: false,
-            repeat_state: RepeatMode::Off,
-            volume_percent: 75,
-            last_synced_at: None,
-        }
-    }
-}
-
-/// An enumeration representing the repeat modes available for media playback.
-///
-/// The `RepeatMode` enum defines three possible states that specify how media
-/// playback should behave with regard to repeating content. This is often used
-/// in media players or streaming applications.
-///
-/// # Variants
-///
-/// * `Off` - Repeat is disabled, i.e., content will play through once and stop.
-/// * `Track` - The current track is repeated indefinitely.
-/// * `Context` - The entire context (e.g., playlist or album) is repeated indefinitely.
-///
-/// # Derives
-///
-/// This enum derives several traits:
-///
-/// * `Debug` - Allows formatting the value using the debug formatter.
-/// * `Clone` - Enables creating a copy of the value.
-/// * `Copy` - Allows for bitwise copying of the value.
-/// * `PartialEq` - Enables equality and inequality comparisons between values.
-/// * `Eq` - Ensures that equality is strict, with no partial equivalence.
-/// * `Serialize` - Allows the enum to be serialized (commonly used with formats like JSON).
-/// * `Deserialize` - Enables the enum to be deserialized from a serialized format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RepeatMode {
-    Off,
-    Track,
-    Context,
-}
-
-impl RepeatMode {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Track => "track",
-            Self::Context => "context",
-        }
-    }
-
-    pub fn next(&self) -> Self {
-        match self {
-            Self::Off => Self::Context,
-            Self::Context => Self::Track,
-            Self::Track => Self::Off,
-        }
-    }
-}
-
-/// Represents the different tabs or sections available in a media player application.
-///
-/// The `PlayerTab` enum is annotated with several useful traits, such as:
-/// - `Debug`: Allows instances of `PlayerTab` to be formatted using the `{:?}` formatter.
-/// - `Clone`: Enables the creation of a duplicate copy of a `PlayerTab` instance.
-/// - `Copy`: Allows `PlayerTab` instances to be implicitly copied instead of moved.
-/// - `PartialEq` and `Eq`: Facilitates comparison of `PlayerTab` instances for equality.
-/// - `Serialize` and `Deserialize`: Provides support for serializing and deserializing `PlayerTab`
-///   instances, typically for use with formats like JSON.
-///
-/// ## Variants
-/// - `NowPlaying`: Represents the "Now Playing" tab, typically showing the currently playing media.
-/// - `Search`: Represents the search tab, allowing users to search for media content.
-/// - `Queue`: Represents the queue tab, displaying the list of media items in the playback queue.
-/// - `Playlists`: Represents the playlist tab, providing access to the user's playlists.
-/// - `Devices`: Represents the device tab, allowing users to view and manage playback devices.
-/// - `Config`: Represents the configuration tab, where users can modify application settings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PlayerTab {
-    NowPlaying,
-    Search,
-    Queue,
-    Playlists,
-    Devices,
-    Config,
-}
-
-impl PlayerTab {
-    pub fn all() -> &'static [PlayerTab] {
-        &[
-            Self::Queue,
-            Self::Search,
-            Self::Playlists,
-            Self::Devices,
-            Self::Config,
-        ]
-    }
-    pub fn title(&self) -> &'static str {
-        match self {
-            Self::NowPlaying => "Now Playing",
-            Self::Search => "Spotify Search",
-            Self::Queue => "Play Queue",
-            Self::Playlists => "Playlists & Albums",
-            Self::Devices => "Connect Devices",
-            Self::Config => "Spotify Settings",
-        }
-    }
-    pub fn shortcut(&self) -> char {
-        match self {
-            Self::NowPlaying => '0',
-            Self::Search => '1',
-            Self::Queue => '2',
-            Self::Playlists => '3',
-            Self::Devices => '4',
-            Self::Config => '5',
-        }
-    }
-}
-
-/// Represents different categories that can be used for searching in a music-related context.
-///
-/// # Variants
-///
-/// - `Tracks`: Represents a search category for individual tracks or songs.
-/// - `Albums`: Represents a search category for complete albums.
-/// - `Playlists`: Represents a search category for curated playlists.
-/// - `Artists`: Represents a search category for music artists.
-///
-/// # Derives
-/// - `Debug`: Allows instances of `SearchCategory` to be formatted using the `{:?}` formatter.
-/// - `Clone`: Provides the ability to produce a copy of a `SearchCategory` instance.
-/// - `Copy`: Allows for bitwise copying of `SearchCategory` values.
-/// - `PartialEq`: Enables comparison of `SearchCategory` instances for equality.
-/// - `Eq`: Ensures reflexive, symmetric, and transitive equality comparisons.
-/// - `Serialize`: Allows `SearchCategory` to be serialized, e.g., for JSON or other forms of storage or communication.
-/// - `Deserialize`: Allows for deserialization of `SearchCategory` from serialized formats, such as JSON.
-///
-/// This enum is used to narrow down or filter searches based on a specific type of entity in a music domain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SearchCategory {
-    Tracks,
-    Albums,
-    Playlists,
-    Artists,
-}
-
-impl SearchCategory {
-    pub fn all() -> &'static [SearchCategory] {
-        &[Self::Tracks, Self::Albums, Self::Playlists, Self::Artists]
-    }
-
-    pub fn name(&self) -> &'static str {
-        match self {
-            Self::Tracks => "Tracks",
-            Self::Albums => "Albums",
-            Self::Playlists => "Playlists",
-            Self::Artists => "Artists",
-        }
-    }
-
-    pub fn api_type(&self) -> &'static str {
-        match self {
-            Self::Tracks => "track",
-            Self::Albums => "album",
-            Self::Playlists => "playlist",
-            Self::Artists => "artist",
-        }
-    }
-}
-
-/// A data structure representing the results of a search query.
-///
-/// The `SearchResults` struct contains collections of tracks, albums, and playlists
-/// that match the search criteria. It is designed to provide an organized and convenient
-/// way to access these results.
-///
-/// # Fields
-///
-/// * `tracks` - A vector containing `TrackItem` objects that represent the tracks
-///   matching the search query.
-/// * `albums` - A vector containing `AlbumItem` objects that represent the albums
-///   matching the search query.
-/// * `playlists` - A vector containing `PlaylistItem` objects that represent the playlists
-///   matching the search query.
-///
-/// # Derives
-///
-/// * `Debug` - Enables formatting the struct using the `{:?}` formatter, which
-///   is helpful for debugging purposes.
-/// * `Clone` - Allows creating an exact copy of a `SearchResults` instance.
-/// * `Default` - Provides a default implementation for creating an empty `SearchResults` instance
-///   where each field is initialized to an empty vector.
-#[derive(Debug, Clone, Default)]
-pub struct SearchResults {
-    pub tracks: Vec<TrackItem>,
-    pub albums: Vec<AlbumItem>,
-    pub playlists: Vec<PlaylistItem>,
-}
-
-impl SearchResults {
-    pub fn is_empty(&self) -> bool {
-        self.tracks.is_empty() && self.albums.is_empty() && self.playlists.is_empty()
-    }
-
-    pub fn total_count(&self, category: SearchCategory) -> usize {
-        match category {
-            SearchCategory::Tracks => self.tracks.len(),
-            SearchCategory::Albums => self.albums.len(),
-            SearchCategory::Playlists => self.playlists.len(),
-            SearchCategory::Artists => 0,
-        }
-    }
-}
-
-/// Represents the credentials required to authenticate with the Spotify API.
-///
-/// This struct is used to store and manage the necessary tokens and client information
-/// for making authorized requests to Spotify's APIs. It implements the `Debug`, `Clone`,
-/// `Serialize`, and `Deserialize` traits to support debugging, copying, and (de)serializing
-/// operations.
-///
-/// # Fields
-///
-/// * `access_token` - Optional access token used to authenticate API requests.
-/// * `refresh_token` - Optional token used to refresh the access token when it expires.
-/// * `client_id` - Optional client identifier associated with the Spotify application.
-/// * `client_secret` - Optional client secret for the Spotify application.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SpotifyCredentials {
-    pub access_token: Option<String>,
-    pub refresh_token: Option<String>,
-    pub client_id: Option<String>,
-    pub client_secret: Option<String>,
-}
-
-impl Default for SpotifyCredentials {
-    fn default() -> Self {
-        Self {
-            access_token: std::env::var("SPOTIFY_TOKEN")
-                .or_else(|_| std::env::var("SPOTIFY_ACCESS_TOKEN"))
-                .ok(),
-            refresh_token: std::env::var("SPOTIFY_REFRESH_TOKEN").ok(),
-            client_id: std::env::var("SPOTIFY_CLIENT_ID").ok(),
-            client_secret: std::env::var("SPOTIFY_CLIENT_SECRET").ok(),
-        }
-    }
-}
-
-impl SpotifyCredentials {
-    pub fn load_from_config() -> Self {
-        let mut creds = Self::default();
-        if let Some(config_dir) = dirs_config_path() {
-            let config_file = config_dir.join("spotify.json");
-            if config_file.exists()
-                && let Ok(content) = fs::read_to_string(&config_file)
-                && let Ok(loaded) = serde_json::from_str::<SpotifyCredentials>(&content)
-            {
-                if creds.access_token.is_none() {
-                    creds.access_token = loaded.access_token;
-                }
-                if creds.refresh_token.is_none() {
-                    creds.refresh_token = loaded.refresh_token;
-                }
-                if creds.client_id.is_none() {
-                    creds.client_id = loaded.client_id;
-                }
-                if creds.client_secret.is_none() {
-                    creds.client_secret = loaded.client_secret;
-                }
-            }
-        }
-        creds
-    }
-    /// Saves the current object state to a configuration file in the user's configuration directory.
-    ///
-    /// This function serializes the object implementing this method into a JSON file
-    /// and writes it to a standard configuration directory (e.g., `$XDG_CONFIG_HOME` on Linux,
-    /// `%APPDATA%` on Windows, etc.). The file is named `spotify.json` and is stored
-    /// in the directory returned by the `dirs_config_path` function. If the directory does
-    /// not exist, it will be created.
-    ///
-    /// # Errors
-    /// Returns an `io::Result<()>` which may contain an error in the following cases:
-    /// - If the configuration directory path is invalid or inaccessible.
-    /// - If the creation of the directory fails.
-    /// - If serialization of the object into JSON format fails.
-    /// - If writing the serialized JSON to the file fails.
-    ///
-    /// # Dependencies
-    /// - The function relies on the `dirs_config_path` function to determine the configuration directory.
-    /// - JSON serialization is performed using the `serde_json` crate.
-    /// - Uses the `std::fs` module for file operations.
-    pub fn save_to_config(&self) -> io::Result<()> {
-        if let Some(config_dir) = dirs_config_path() {
-            fs::create_dir_all(&config_dir)?;
-            let config_file = config_dir.join("spotify.json");
-            let json =
-                serde_json::to_string_pretty(self).map_err(|e| io::Error::other(e.to_string()))?;
-            fs::write(config_file, json)?;
-        }
-        Ok(())
-    }
-    /// Checks if the configuration for an instance is complete.
-    ///
-    /// This method evaluates whether the necessary credentials are available
-    /// for the functionality to operate correctly. The configuration is considered
-    /// complete if one of the following conditions is met:
-    ///
-    /// 1. An access token is set (`self.access_token` is `Some`).
-    /// 2. Both a client ID and client secret are set (`self.client_id` and `self.client_secret` are `Some`).
-    ///
-    /// # Returns
-    ///
-    /// * `true` - If the configuration is complete.
-    /// * `false` - If the configuration is incomplete.
-    pub fn is_configured(&self) -> bool {
-        self.access_token.is_some() || (self.client_id.is_some() && self.client_secret.is_some())
-    }
-
-    /// Generates the file path for the Spotify configuration file.
-    ///
-    /// This function retrieves the user's configuration directory path using the `dirs_config_path`
-    /// function and appends the filename "spotify.json" to it. If the configuration directory path
-    /// exists, it returns the full path to the configuration file as a `PathBuf`.
-    ///
-    /// # Returns
-    /// - `Some(PathBuf)` containing the full path to "spotify.json" if the configuration directory exists.
-    /// - `None` if the configuration directory cannot be determined.
-    ///
-    pub fn config_file_path() -> Option<PathBuf> {
-        dirs_config_path().map(|dir| dir.join("spotify.json"))
-    }
-
-    /// Updates tokens (access_token and/or refresh_token) in the saved configuration file.
-    ///
-    /// Loads existing configuration first, overrides with provided token values (if Some),
-    /// writes to disk, and returns the updated `SpotifyCredentials`.
-    pub fn update_tokens_in_config(
-        access_token: Option<String>,
-        refresh_token: Option<String>,
-    ) -> io::Result<Self> {
-        let mut creds = Self::load_from_config();
-        if access_token.is_some() {
-            creds.access_token = access_token;
-        }
-        if refresh_token.is_some() {
-            creds.refresh_token = refresh_token;
-        }
-        creds.save_to_config()?;
-        Ok(creds)
-    }
-
-    /// Updates the access token and persists it to the configuration file.
-    pub fn update_access_token_in_config(access_token: impl Into<String>) -> io::Result<Self> {
-        Self::update_tokens_in_config(Some(access_token.into()), None)
-    }
-
-    /// Updates the refresh token and persists it to the configuration file.
-    pub fn update_refresh_token_in_config(refresh_token: impl Into<String>) -> io::Result<Self> {
-        Self::update_tokens_in_config(None, Some(refresh_token.into()))
-    }
-}
-
-/// Returns the configuration path for the application.
-///
-/// The function first attempts to retrieve the user's configuration directory
-/// using the `dirs::config_dir` function, which provides a platform-appropriate
-/// default configuration directory (e.g., `~/.config` on Linux or
-/// `%AppData%` on Windows). If this directory is found, a folder named "qwx" is
-/// appended to it and returned as a `PathBuf`.
-///
-/// If `dirs::config_dir` does not return a valid path, the function falls back
-/// to using the `HOME` environment variable. The `HOME` environment variable
-/// is used to construct a fallback configuration path in the form:
-/// `<HOME>/.config/qwx`.
-///
-/// # Returns
-/// * `Some(PathBuf)` - The computed configuration path if the process succeeds.
-/// * `None` - If no configuration path could be determined.
-fn dirs_config_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|p| p.join("qwx")).or_else(|| {
-        std::env::var("HOME")
-            .ok()
-            .map(|home| PathBuf::from(home).join(".config").join("qwx"))
-    })
-}
-
-/// Represents a client for interacting with the Spotify Web API.
-///
-/// The `SpotifyClient` struct provides functionality to communicate with Spotify's
-/// API using `reqwest::blocking::Client`. Credentials and base URL for the API are
-/// required to perform operations.
-///
-/// # Fields
-/// * `client` - An instance of `reqwest::blocking::Client` used to make HTTP requests.
-/// * `credentials` - A `SpotifyCredentials` struct that holds the Spotify API credentials
-///   (such as client ID and client secret).
-/// * `base_url` - A `String` representing the base URL of the Spotify API (e.g., "https://api.spotify.com").
-///
-/// # Examples
-///
-/// Create a new instance of the `SpotifyClient`:
-/// ```rust
-/// use qwx::player::SpotifyClient;
-/// use qwx::player::SpotifyCredentials;
-/// let spotify_client = SpotifyClient {
-///     client: reqwest::blocking::Client::new(),
-///     credentials: SpotifyCredentials {
-///         client_id: Some("your_client_id".to_string()),
-///         client_secret: Some("your_client_secret".to_string()),
-///         access_token: None,
-///         refresh_token: None,
-///     },
-///     base_url: "https://api.spotify.com".to_string(),
-/// };
-///
-/// ```
-///
-/// Use the `SpotifyClient` to make API calls:
-#[derive(Debug, Clone)]
-pub struct SpotifyClient {
-    pub client: reqwest::blocking::Client,
-    pub credentials: SpotifyCredentials,
-    pub base_url: String,
-}
-
-impl Default for SpotifyClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SpotifyClient {
-    #[must_use]
-    pub fn new() -> Self {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(8))
-            .build()
-            .unwrap_or_else(|_| reqwest::blocking::Client::new());
-
-        let credentials = SpotifyCredentials::load_from_config();
-
-        Self {
-            client,
-            credentials,
-            base_url: "https://api.spotify.com/v1".to_string(),
-        }
-    }
-
-    /// Configures the client with the specified access token.
-    ///
-    /// This method allows you to set an access token for the client, which will be
-    /// used for authentication purposes in later API requests. It consumes
-    /// the provided value and converts it into a `String` before assigning it to
-    /// the client's credentials.
-    ///
-    /// # Arguments
-    ///
-    /// * `token` - A value that can be converted into a `String`, representing the
-    ///   access token to be used by the client.
-    ///
-    /// # Returns
-    ///
-    /// Returns an instance of the client with the access token configured.
-    pub fn with_token(token: impl Into<String>) -> Self {
-        let mut client = Self::new();
-        client.credentials.access_token = Some(token.into());
-        client
-    }
-
-    /// Sets the access token.
-    pub fn set_token(&mut self, token: impl Into<String>) {
-        self.credentials.access_token = Some(token.into());
-    }
-
-    /// Sets the access token and immediately saves it to the configuration file.
-    pub fn set_and_save_token(&mut self, token: impl Into<String>) -> io::Result<()> {
-        let tok = token.into();
-        self.credentials.access_token = Some(tok);
-        self.credentials.save_to_config()
-    }
-
-    /// Fetches Client Credentials Access Token if Client ID and Secret are configured.
-    pub fn request_client_credentials_token(&mut self) -> Result<String, String> {
-        let client_id = self
-            .credentials
-            .client_id
-            .as_ref()
-            .ok_or_else(|| "Missing Client ID".to_string())?;
-        let client_secret = self
-            .credentials
-            .client_secret
-            .as_ref()
-            .ok_or_else(|| "Missing Client Secret".to_string())?;
-
-        let res = self
-            .client
-            .post("https://accounts.spotify.com/api/token")
-            .basic_auth(client_id, Some(client_secret))
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body("grant_type=client_credentials")
-            .send()
-            .map_err(|e| format!("HTTP request error: {}", e))?;
-
-        if !res.status().is_success() {
-            return Err(format!("Auth failed with status: {}", res.status()));
-        }
-
-        #[derive(Deserialize)]
-        struct TokenResponse {
-            access_token: String,
-        }
-
-        let token_data: TokenResponse = res
-            .json()
-            .map_err(|e| format!("JSON parsing error: {}", e))?;
-
-        self.credentials.access_token = Some(token_data.access_token.clone());
-        let _ = self.credentials.save_to_config();
-        Ok(token_data.access_token)
-    }
-
-    /// Prepares authorized request builder.
-    fn auth_get(&self, path: &str) -> Result<reqwest::blocking::RequestBuilder, String> {
-        let token =
-            self.credentials.access_token.as_ref().ok_or_else(|| {
-                "Spotify Access Token not set. Press [t] to configure.".to_string()
-            })?;
-        let url = format!("{}{}", self.base_url, path);
-        Ok(self.client.get(&url).bearer_auth(token))
-    }
-
-    fn auth_post(&self, path: &str) -> Result<reqwest::blocking::RequestBuilder, String> {
-        let token =
-            self.credentials.access_token.as_ref().ok_or_else(|| {
-                "Spotify Access Token not set. Press [t] to configure.".to_string()
-            })?;
-        let url = format!("{}{}", self.base_url, path);
-        Ok(self.client.post(&url).bearer_auth(token))
-    }
-
-    fn auth_put(&self, path: &str) -> Result<reqwest::blocking::RequestBuilder, String> {
-        let token =
-            self.credentials.access_token.as_ref().ok_or_else(|| {
-                "Spotify Access Token not set. Press [t] to configure.".to_string()
-            })?;
-        let url = format!("{}{}", self.base_url, path);
-        Ok(self.client.put(&url).bearer_auth(token))
-    }
-
-    /// Search tracks, albums, and playlists on Spotify.
-    pub fn search(&self, query: &str, limit: u32) -> Result<SearchResults, String> {
-        if query.trim().is_empty() {
-            return Ok(SearchResults::default());
-        }
-
-        // Spotify API /v1/search enforces a limit between 1 and 50 (maximum 50 items per type)
-        let limit = limit.clamp(1, 10);
-        let encoded_q = urlencoding_simple(query);
-        let path = format!(
-            "/search?q={}&type=track,album,playlist&limit={}",
-            encoded_q, limit
-        );
-
-        let req = self.auth_get(&path)?;
-        let res = req
-            .send()
-            .map_err(|e| format!("Search network error: {}", e))?;
-
-        if !res.status().is_success() {
-            let status = res.status();
-            let err_body = res.text().unwrap_or_default();
-            return Err(format!("Spotify API Error ({}): {}", status, err_body));
-        }
-
-        let val: serde_json::Value = res
-            .json()
-            .map_err(|e| format!("Search response JSON error: {}", e))?;
-
-        let mut results = SearchResults::default();
-
-        // Parse tracks
-        if let Some(items) = val["tracks"]["items"].as_array() {
-            for item in items {
-                if let Some(track) = parse_spotify_track_json(item) {
-                    results.tracks.push(track);
-                }
-            }
-        }
-
-        // Parse albums
-        if let Some(items) = val["albums"]["items"].as_array() {
-            for item in items {
-                let id = item["id"].as_str().unwrap_or_default().to_string();
-                let name = item["name"].as_str().unwrap_or_default().to_string();
-                let uri = item["uri"].as_str().unwrap_or_default().to_string();
-                let release_date = item["release_date"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string();
-                let total_tracks = item["total_tracks"].as_u64().unwrap_or(0) as u32;
-                let mut artists = Vec::new();
-                if let Some(artists_arr) = item["artists"].as_array() {
-                    for a in artists_arr {
-                        if let Some(a_name) = a["name"].as_str() {
-                            artists.push(a_name.to_string());
-                        }
-                    }
-                }
-                results.albums.push(AlbumItem {
-                    id,
-                    name,
-                    artists,
-                    release_date,
-                    total_tracks,
-                    uri,
-                });
-            }
-        }
-
-        // Parse playlists
-        if let Some(items) = val["playlists"]["items"].as_array() {
-            for item in items {
-                if item.is_null() {
-                    continue;
-                }
-                let id = item["id"].as_str().unwrap_or_default().to_string();
-                let name = item["name"].as_str().unwrap_or_default().to_string();
-                let uri = item["uri"].as_str().unwrap_or_default().to_string();
-                let description = item["description"].as_str().unwrap_or_default().to_string();
-                let owner_name = item["owner"]["display_name"]
-                    .as_str()
-                    .unwrap_or("Spotify")
-                    .to_string();
-                let total_tracks = item["tracks"]["total"].as_u64().unwrap_or(0) as u32;
-
-                results.playlists.push(PlaylistItem {
-                    id,
-                    name,
-                    description,
-                    owner_name,
-                    total_tracks,
-                    uri,
-                });
-            }
-        }
-
-        Ok(results)
-    }
-
-    /// Gets current playback state from Spotify Connect.
-    pub fn get_playback_state(&self) -> Result<Option<PlaybackState>, String> {
-        let req = self.auth_get("/me/player")?;
-        let res = req
-            .send()
-            .map_err(|e| format!("Playback state error: {}", e))?;
-
-        if res.status() == reqwest::StatusCode::NO_CONTENT {
-            return Ok(None);
-        }
-
-        if !res.status().is_success() {
-            return Err(format!("Get playback failed: {}", res.status()));
-        }
-
-        let val: serde_json::Value = res
-            .json()
-            .map_err(|e| format!("Playback JSON error: {}", e))?;
-
-        let is_playing = val["is_playing"].as_bool().unwrap_or(false);
-        let progress_ms = val["progress_ms"].as_u64().unwrap_or(0);
-        let shuffle_state = val["shuffle_state"].as_bool().unwrap_or(false);
-        let repeat_str = val["repeat_state"].as_str().unwrap_or("off");
-        let repeat_state = match repeat_str {
-            "track" => RepeatMode::Track,
-            "context" => RepeatMode::Context,
-            _ => RepeatMode::Off,
-        };
-
-        let mut track_item = None;
-        if let Some(item_obj) = val.get("item").filter(|i| !i.is_null()) {
-            track_item = parse_spotify_track_json(item_obj);
-        }
-
-        let mut device_item = None;
-        let mut volume_percent = 75;
-        if let Some(dev_obj) = val.get("device").filter(|d| !d.is_null()) {
-            let id = dev_obj["id"].as_str().unwrap_or_default().to_string();
-            let name = dev_obj["name"].as_str().unwrap_or_default().to_string();
-            let is_active = dev_obj["is_active"].as_bool().unwrap_or(false);
-            let is_restricted = dev_obj["is_restricted"].as_bool().unwrap_or(false);
-            let device_type = dev_obj["type"].as_str().unwrap_or("Speaker").to_string();
-            let vol = dev_obj["volume_percent"].as_u64().map(|v| v as u32);
-            if let Some(v) = vol {
-                volume_percent = v;
-            }
-            device_item = Some(DeviceItem {
-                id,
-                is_active,
-                is_restricted,
-                name,
-                device_type,
-                volume_percent: vol,
-            });
-        }
-
-        Ok(Some(PlaybackState {
-            is_playing,
-            progress_ms,
-            item: track_item,
-            device: device_item,
-            shuffle_state,
-            repeat_state,
-            volume_percent,
-            last_synced_at: Some(Instant::now()),
-        }))
-    }
-
-    /// Plays a Spotify URI (Track, Album, or Playlist).
-    pub fn play_uri(&self, uri: &str, device_id: Option<&str>) -> Result<(), String> {
-        let mut path = "/me/player/play".to_string();
-        if let Some(dev) = device_id {
-            path.push_str(&format!("?device_id={}", dev));
-        }
-
-        let mut body = serde_json::Map::new();
-        if uri.starts_with("spotify:track:") {
-            body.insert(
-                "uris".to_string(),
-                serde_json::Value::Array(vec![serde_json::Value::String(uri.to_string())]),
-            );
-        } else {
-            body.insert(
-                "context_uri".to_string(),
-                serde_json::Value::String(uri.to_string()),
-            );
-        }
-
-        let req = self.auth_put(&path)?.json(&serde_json::Value::Object(body));
-        let res = req.send().map_err(|e| format!("Play error: {}", e))?;
-
-        if res.status().is_success() || res.status() == reqwest::StatusCode::NO_CONTENT {
-            Ok(())
-        } else {
-            let err_text = res.text().unwrap_or_default();
-            Err(format!("Play request failed: {}", err_text))
-        }
-    }
-
-    /// Resumes playback on the active device.
-    pub fn resume(&self) -> Result<(), String> {
-        let req = self.auth_put("/me/player/play")?;
-        let res = req.send().map_err(|e| format!("Resume error: {}", e))?;
-        if res.status().is_success() || res.status() == reqwest::StatusCode::NO_CONTENT {
-            Ok(())
-        } else {
-            Err("Resume failed. Ensure a Spotify Connect device is active.".to_string())
-        }
-    }
-
-    /// Pauses playback.
-    pub fn pause(&self) -> Result<(), String> {
-        let req = self.auth_put("/me/player/pause")?;
-        let res = req.send().map_err(|e| format!("Pause error: {}", e))?;
-        if res.status().is_success() || res.status() == reqwest::StatusCode::NO_CONTENT {
-            Ok(())
-        } else {
-            Err("Pause failed".to_string())
-        }
-    }
-
-    /// Skips to the next track.
-    pub fn next(&self) -> Result<(), String> {
-        let req = self.auth_post("/me/player/next")?;
-        let res = req.send().map_err(|e| format!("Next error: {}", e))?;
-        if res.status().is_success() || res.status() == reqwest::StatusCode::NO_CONTENT {
-            Ok(())
-        } else {
-            Err("Next track failed".to_string())
-        }
-    }
-
-    /// Skips to previous track.
-    pub fn previous(&self) -> Result<(), String> {
-        let req = self.auth_post("/me/player/previous")?;
-        let res = req.send().map_err(|e| format!("Previous error: {}", e))?;
-        if res.status().is_success() || res.status() == reqwest::StatusCode::NO_CONTENT {
-            Ok(())
-        } else {
-            Err("Previous track failed".to_string())
-        }
-    }
-
-    /// Seeks to position in ms.
-    pub fn seek(&self, position_ms: u64) -> Result<(), String> {
-        let path = format!("/me/player/seek?position_ms={}", position_ms);
-        let req = self.auth_put(&path)?;
-        let res = req.send().map_err(|e| format!("Seek error: {}", e))?;
-        if res.status().is_success() || res.status() == reqwest::StatusCode::NO_CONTENT {
-            Ok(())
-        } else {
-            Err("Seek failed".to_string())
-        }
-    }
-
-    /// Sets playback volume (0..100).
-    pub fn set_volume(&self, volume_percent: u32) -> Result<(), String> {
-        let vol = volume_percent.min(100);
-        let path = format!("/me/player/volume?volume_percent={}", vol);
-        let req = self.auth_put(&path)?;
-        let res = req.send().map_err(|e| format!("Volume error: {}", e))?;
-        if res.status().is_success() || res.status() == reqwest::StatusCode::NO_CONTENT {
-            Ok(())
-        } else {
-            Err("Set volume failed".to_string())
-        }
-    }
-
-    /// Toggles shuffle mode.
-    pub fn set_shuffle(&self, state: bool) -> Result<(), String> {
-        let path = format!("/me/player/shuffle?state={}", state);
-        let req = self.auth_put(&path)?;
-        let res = req.send().map_err(|e| format!("Shuffle error: {}", e))?;
-        if res.status().is_success() || res.status() == reqwest::StatusCode::NO_CONTENT {
-            Ok(())
-        } else {
-            Err("Toggle shuffle failed".to_string())
-        }
-    }
-
-    /// Sets repeat mode (off, track, context).
-    pub fn set_repeat(&self, mode: RepeatMode) -> Result<(), String> {
-        let path = format!("/me/player/repeat?state={}", mode.as_str());
-        let req = self.auth_put(&path)?;
-        let res = req.send().map_err(|e| format!("Repeat error: {}", e))?;
-        if res.status().is_success() || res.status() == reqwest::StatusCode::NO_CONTENT {
-            Ok(())
-        } else {
-            Err("Set repeat failed".to_string())
-        }
-    }
-
-    /// Gets available Spotify Connect devices.
-    pub fn get_devices(&self) -> Result<Vec<DeviceItem>, String> {
-        let req = self.auth_get("/me/player/devices")?;
-        let res = req.send().map_err(|e| format!("Devices error: {}", e))?;
-
-        if !res.status().is_success() {
-            return Err(format!("Get devices failed: {}", res.status()));
-        }
-
-        let val: serde_json::Value = res
-            .json()
-            .map_err(|e| format!("Devices JSON error: {}", e))?;
-
-        let mut devices = Vec::new();
-        if let Some(arr) = val["devices"].as_array() {
-            for dev in arr {
-                let id = dev["id"].as_str().unwrap_or_default().to_string();
-                let name = dev["name"].as_str().unwrap_or_default().to_string();
-                let is_active = dev["is_active"].as_bool().unwrap_or(false);
-                let is_restricted = dev["is_restricted"].as_bool().unwrap_or(false);
-                let device_type = dev["type"].as_str().unwrap_or("Speaker").to_string();
-                let volume_percent = dev["volume_percent"].as_u64().map(|v| v as u32);
-
-                devices.push(DeviceItem {
-                    id,
-                    is_active,
-                    is_restricted,
-                    name,
-                    device_type,
-                    volume_percent,
-                });
-            }
-        }
-
-        Ok(devices)
-    }
-
-    /// Transfers playback to the target device.
-    pub fn transfer_playback(&self, device_id: &str, play: bool) -> Result<(), String> {
-        let body = serde_json::json!({
-            "device_ids": [device_id],
-            "play": play
-        });
-
-        let req = self.auth_put("/me/player")?.json(&body);
-        let res = req.send().map_err(|e| format!("Transfer error: {}", e))?;
-        if res.status().is_success() || res.status() == reqwest::StatusCode::NO_CONTENT {
-            Ok(())
-        } else {
-            Err("Transfer playback failed".to_string())
-        }
-    }
-
-    /// Fetches user's saved tracks (Liked Songs).
-    pub fn get_saved_tracks(&self, limit: u32) -> Result<Vec<TrackItem>, String> {
-        let path = format!("/me/tracks?limit={limit}");
-        let req = self.auth_get(&path)?;
-        let res = req
-            .send()
-            .map_err(|e| format!("Saved tracks error: {}", e))?;
-
-        if !res.status().is_success() {
-            return Err(format!("Get saved tracks failed: {}", res.status()));
-        }
-
-        let val: serde_json::Value = res
-            .json()
-            .map_err(|e| format!("Saved tracks JSON error: {}", e))?;
-
-        let mut tracks = Vec::new();
-        if let Some(items) = val["items"].as_array() {
-            for item in items {
-                if let Some(track_obj) = item.get("track")
-                    && let Some(track) = parse_spotify_track_json(track_obj)
-                {
-                    tracks.push(track);
-                }
-            }
-        }
-        Ok(tracks)
-    }
-
-    /// Fetches featured playlists from Spotify browse API.
-    pub fn get_featured_playlists(&self) -> Result<Vec<PlaylistItem>, String> {
-        let req = self.auth_get("/browse/featured-playlists?limit=20")?;
-        let res = req
-            .send()
-            .map_err(|e| format!("Featured playlists error: {}", e))?;
-
-        if !res.status().is_success() {
-            return Err(format!("Featured playlists failed: {}", res.status()));
-        }
-
-        let val: serde_json::Value = res
-            .json()
-            .map_err(|e| format!("Playlists JSON error: {}", e))?;
-
-        let mut playlists = Vec::new();
-        if let Some(items) = val["playlists"]["items"].as_array() {
-            for item in items {
-                if item.is_null() {
-                    continue;
-                }
-                let id = item["id"].as_str().unwrap_or_default().to_string();
-                let name = item["name"].as_str().unwrap_or_default().to_string();
-                let uri = item["uri"].as_str().unwrap_or_default().to_string();
-                let description = item["description"].as_str().unwrap_or_default().to_string();
-                let owner_name = item["owner"]["display_name"]
-                    .as_str()
-                    .unwrap_or("Spotify")
-                    .to_string();
-                let total_tracks = item["tracks"]["total"].as_u64().unwrap_or(0) as u32;
-
-                playlists.push(PlaylistItem {
-                    id,
-                    name,
-                    description,
-                    owner_name,
-                    total_tracks,
-                    uri,
-                });
-            }
-        }
-
-        Ok(playlists)
-    }
-}
-
-/// Helper to parse a Spotify Track JSON value into `TrackItem`.
-fn parse_spotify_track_json(item: &serde_json::Value) -> Option<TrackItem> {
-    let id = item["id"].as_str()?.to_string();
-    let name = item["name"].as_str()?.to_string();
-    let uri = item["uri"].as_str().unwrap_or_default().to_string();
-    let duration_ms = item["duration_ms"].as_u64().unwrap_or(0);
-    let preview_url = item["preview_url"].as_str().map(|s| s.to_string());
-    let popularity = item["popularity"].as_u64().map(|p| p as u32);
-    let is_playable = item["is_playable"].as_bool().unwrap_or(true);
-
-    let album_name = item["album"]["name"]
-        .as_str()
-        .unwrap_or("Single")
-        .to_string();
-
-    let mut artists = Vec::new();
-    if let Some(artists_arr) = item["artists"].as_array() {
-        for a in artists_arr {
-            if let Some(a_name) = a["name"].as_str() {
-                artists.push(a_name.to_string());
-            }
-        }
-    }
-
-    Some(TrackItem {
-        id: id.clone(),
-        name,
-        artists,
-        album_name,
-        duration_ms,
-        uri: uri.clone(),
-        preview_url,
-        popularity,
-        is_playable,
-        source: AudioSource::Spotify { uri, id },
-    })
-}
-
-/// Simple URL query encoder.
-fn urlencoding_simple(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~' {
-            out.push(b as char);
-        } else if b == b' ' {
-            out.push('+');
-        } else {
-            out.push_str(&format!("%{:02X}", b));
-        }
-    }
-    out
-}
-
-/// Formats duration in milliseconds as MM:SS.
-pub fn format_duration_ms(ms: u64) -> String {
-    let total_seconds = ms / 1000;
-    let minutes = total_seconds / 60;
-    let seconds = total_seconds % 60;
-    format!("{:02}:{:02}", minutes, seconds)
-}
-
-/// Helper function to truncate strings safely to a specific terminal column width.
-fn truncate_to_width(s: &str, max_width: usize) -> String {
-    let mut current_w = 0;
-    let mut out = String::new();
-    for c in s.chars() {
-        let cw = UnicodeWidthChar::width(c).unwrap_or(0);
-        if current_w + cw > max_width {
-            break;
-        }
-        out.push(c);
-        current_w += cw;
-    }
-    out
-}
-
-/// Active modal prompt in the music player.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PlayerPrompt {
-    None,
-    Search,
-    TokenInput,
-    ClientIdInput,
-    ClientSecretInput,
-    SeekInput,
-    VolumeInput,
-}
-
-///
-/// Represents a music player capable of interacting with Spotify's API, managing playback state,
-/// handling search functionality, managing playlists/queue, supporting interactive prompts,
-/// and simulating a visualizer.
-///
-/// # Fields
-///
-/// - `client: SpotifyClient`
-///   The client instance used to communicate with the Spotify API.
-///
-/// - `playback: PlaybackState`
-///   The current playback state, including information about the currently playing track.
-///
-/// - `active_tab: PlayerTab`
-///   Tracks the currently active user interface tab in the music player (e.g., playlist, search).
-///
-/// - `selected_index: usize`
-///   Represents the index of the currently selected item (e.g., track, playlist) within the active tab.
-///
-/// - `scroll_offset: usize`
-///   Tracks the scrolling offset used for rendering content in the UI when the list exceeds the viewable area.
-///
-/// ## Search State
-///
-/// - `search_query: String`
-///   The current search query input by the user.
-///
-/// - `search_category: SearchCategory`
-///   Specifies the category of the search (e.g., tracks, albums, artists).
-///
-/// - `search_results: SearchResults`
-///   Holds the results of the current search, categorized based on the search type.
-///
-/// ## Queue & Playlists
-///
-/// - `queue: Vec<TrackItem>`
-///   A vector containing the current playback queue of tracks.
-///
-/// - `playlists: Vec<PlaylistItem>`
-///   A vector of playlists available to the user.
-///
-/// - `devices: Vec<DeviceItem>`
-///   A vector containing devices linked to the Spotify account compatible with playback.
-///
-/// ## Interactive Prompts
-///
-/// - `active_prompt: PlayerPrompt`
-///   Represents the active user interaction prompt, when applicable (e.g., adding to a playlist).
-///
-/// - `prompt_input: String`
-///   Captures user input for the currently active prompt.
-///
-/// - `status_message: Option<String>`
-///   Displays an optional status update message, used for providing feedback or updating the state.
-///
-/// ## Visualizer Simulation State
-///
-/// - `visualizer_tick: usize`
-///   Tracks the tick count of the visualizer used for rendering simulated visualizations.
-///
-/// - `last_tick_time: Instant`
-///   Represents the time at which the last visualizer tick was processed.
-///
-/// This structure ties together the core state and functionality needed for an interactive music player,
-/// managing both user-facing and internal data processing operations.
-///
-/// Nœud du tree musical
 #[derive(Clone, Deserialize, Serialize)]
 pub struct TreeNode {
     pub name: String,
@@ -1395,14 +34,45 @@ pub struct TreeNode {
     pub track_count: usize,
 }
 
+impl TreeNode {
+    pub fn new(name: String, path: PathBuf, is_dir: bool) -> Self {
+        Self {
+            name,
+            path,
+            is_dir,
+            children: Vec::new(),
+            expanded: false,
+            is_favorite: false,
+            track_count: 0,
+        }
+    }
+
+    fn find_mut(&mut self, path: &Path) -> Option<&mut Self> {
+        if self.path == path {
+            return Some(self);
+        }
+        self.children
+            .iter_mut()
+            .find_map(|child| child.find_mut(path))
+    }
+
+    fn collapse_all(&mut self) {
+        self.expanded = false;
+        for child in &mut self.children {
+            child.collapse_all();
+        }
+    }
+}
+
 pub(crate) struct LocalLibrary {
     tree: TreeNode,
-    tracks: Vec<TrackItem>,
+    tracks: Vec<PathBuf>,
     notice: Option<String>,
 }
 
 pub(crate) enum PlayerLoadEvent {
-    Ready(SpotifyClient),
+    Ready,
+    Playlist(io::Result<(PathBuf, Vec<PathBuf>)>),
     Library(io::Result<LocalLibrary>),
 }
 
@@ -1419,8 +89,20 @@ impl PlayerLoader {
         thread::Builder::new()
             .name("qwx-player-loader".to_string())
             .spawn(move || {
-                let client = SpotifyClient::new();
-                if sender.send(PlayerLoadEvent::Ready(client)).is_err()
+                if sender.send(PlayerLoadEvent::Ready).is_err()
+                    || worker_cancelled.load(Ordering::Relaxed)
+                {
+                    return;
+                }
+                let playlist = dirs::config_dir()
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::NotFound, "Config directory not found")
+                    })
+                    .and_then(|dir| {
+                        let path = dir.join("qwx").join("playlist.json");
+                        load_playlist(&path).map(|tracks| (path, tracks))
+                    });
+                if sender.send(PlayerLoadEvent::Playlist(playlist)).is_err()
                     || worker_cancelled.load(Ordering::Relaxed)
                 {
                     return;
@@ -1454,54 +136,63 @@ impl Drop for PlayerLoader {
     }
 }
 
-impl TreeNode {
-    pub fn new(name: String, path: PathBuf, is_dir: bool) -> Self {
-        Self {
-            name,
-            path,
-            is_dir,
-            children: Vec::new(),
-            expanded: false,
-            is_favorite: false,
-            track_count: 0,
-        }
-    }
+fn load_playlist(path: &Path) -> io::Result<Vec<PathBuf>> {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    serde_json::from_reader(file).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+fn save_playlist(path: &Path, tracks: &[PathBuf]) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::other("playlist has no parent"))?;
+    fs::create_dir_all(parent)?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    serde_json::to_writer(&mut temp, tracks).map_err(io::Error::other)?;
+    temp.flush()?;
+    temp.as_file().sync_all()?;
+    temp.persist(path).map_err(|error| error.error)?;
+    Ok(())
+}
+
+#[derive(Clone)]
+struct VisibleNode {
+    name: String,
+    path: PathBuf,
+    depth: usize,
+    is_dir: bool,
+    expanded: bool,
+    is_favorite: bool,
+    track_count: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PlayerView {
+    Tree,
+    Playlist,
 }
 
 pub struct MusicPlayer {
-    pub current_sink: Option<std::sync::Arc<std::sync::Mutex<rodio::Sink>>>,
-    pub current_stream: Option<rodio::OutputStream>,
-    pub current_path: Option<PathBuf>,
-    pub client: SpotifyClient,
-    pub playback: PlaybackState,
-    pub active_tab: PlayerTab,
-    pub selected_index: usize,
-    pub scroll_offset: usize,
-
-    // Search state
-    pub search_query: String,
-    pub search_category: SearchCategory,
-    pub search_results: SearchResults,
-
-    // Queue & Playlists
-    pub tree: Option<TreeNode>,
-    pub tree_cursor: usize,
-    pub tree_filter: String,
-    pub track_cache: std::collections::HashMap<PathBuf, u32>,
-    pub tree_flat: Vec<(usize, String, PathBuf, bool)>,
-    pub queue: Vec<TrackItem>,
-    pub playlists: Vec<PlaylistItem>,
-    pub devices: Vec<DeviceItem>,
-
-    // Interactive Prompts
-    pub active_prompt: PlayerPrompt,
-    pub prompt_input: String,
-    pub status_message: Option<String>,
-    playback_refresh: Option<Receiver<Result<Option<PlaybackState>, String>>>,
-
-    // Visualizer simulation state
-    pub visualizer_tick: usize,
-    pub last_tick_time: Instant,
+    playback: Option<Playback>,
+    playback_revision: u64,
+    current_path: Option<PathBuf>,
+    volume: u32,
+    repeat: Repeat,
+    view: PlayerView,
+    playlist: Vec<PathBuf>,
+    playlist_path: Option<PathBuf>,
+    playlist_error: Option<String>,
+    tree: Option<TreeNode>,
+    tracks: Vec<PathBuf>,
+    visible: Vec<VisibleNode>,
+    cursor: usize,
+    scroll: usize,
+    filter: String,
+    editing_filter: bool,
+    status_message: Option<String>,
 }
 
 impl Default for MusicPlayer {
@@ -1510,156 +201,52 @@ impl Default for MusicPlayer {
     }
 }
 
-fn play_local_flac(
-    path: &std::path::Path,
-    current_sink: &mut Option<std::sync::Arc<std::sync::Mutex<rodio::Sink>>>,
-    current_stream: &mut Option<rodio::OutputStream>,
-    current_path: &mut Option<PathBuf>,
-) -> Result<(), String> {
-    use std::io::BufReader;
-    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-    let source = rodio::Decoder::new(BufReader::new(file)).map_err(|error| error.to_string())?;
-    let (stream, handle) = rodio::OutputStream::try_default().map_err(|error| error.to_string())?;
-    let sink = rodio::Sink::try_new(&handle).map_err(|error| error.to_string())?;
-    sink.append(source);
-    if let Some(old) = current_sink.take() {
-        old.lock().map_err(|error| error.to_string())?.stop();
-    }
-    *current_sink = Some(Arc::new(std::sync::Mutex::new(sink)));
-    *current_stream = Some(stream);
-    *current_path = Some(path.to_path_buf());
-    Ok(())
-}
 impl MusicPlayer {
-    pub fn get_track_number(&self, path: &std::path::Path) -> Option<u32> {
-        // Vérifie si le cache existe et contient la valeur
-        if !self.track_cache.is_empty() {
-            if let Some(&num) = self.track_cache.get(path) {
-                return Some(num);
-            }
-        }
-        // Sinon lit le fichier
-        Self::read_track_number(path)
-    }
-
-    fn read_track_number(path: &std::path::Path) -> Option<u32> {
-        use std::fs::File;
-        use symphonia::core::formats::FormatOptions;
-        use symphonia::core::io::MediaSourceStream;
-        use symphonia::core::meta::MetadataOptions;
-        use symphonia::core::probe::Hint;
-
-        let file = File::open(path).ok()?;
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
-        let hint = Hint::new();
-        let format_opts = FormatOptions::default();
-        let metadata_opts = MetadataOptions::default();
-
-        let mut probed = symphonia::default::get_probe()
-            .format(&hint, mss, &format_opts, &metadata_opts)
-            .ok()?;
-
-        if let Some(metadata) = probed.metadata.get() {
-            if let Some(rev) = metadata.current() {
-                for tag in rev.tags() {
-                    let key = tag.key.as_str().to_uppercase();
-                    if key == "TRACKNUMBER" || key == "TRCK" {
-                        return tag.value.to_string().parse::<u32>().ok();
-                    }
-                }
-            }
-        }
-        None
-    }
     #[must_use]
     pub fn new() -> Self {
-        Self::with_client(SpotifyClient::new())
-    }
-
-    pub(crate) fn with_client(client: SpotifyClient) -> Self {
         Self {
-            client,
-            playback: PlaybackState::default(),
-            active_tab: PlayerTab::Queue,
-            selected_index: 0,
-            scroll_offset: 0,
-            search_query: String::new(),
-            search_category: SearchCategory::Tracks,
-            search_results: SearchResults::default(),
-            queue: Vec::new(),
-            playlists: Vec::new(),
-            devices: Vec::new(),
-            active_prompt: PlayerPrompt::None,
-            prompt_input: String::new(),
-            status_message: Some("Loading music library...".to_string()),
-            playback_refresh: None,
-            visualizer_tick: 0,
-            last_tick_time: Instant::now(),
+            playback: None,
+            playback_revision: 0,
             current_path: None,
-            current_sink: None,
-            current_stream: None,
+            volume: 100,
+            repeat: Repeat::Off,
+            view: PlayerView::Tree,
+            playlist: Vec::new(),
+            playlist_path: None,
+            playlist_error: None,
             tree: None,
-            tree_cursor: 0,
-            tree_flat: Vec::new(),
-            tree_filter: String::new(),
-            track_cache: std::collections::HashMap::new(),
+            tracks: Vec::new(),
+            visible: Vec::new(),
+            cursor: 0,
+            scroll: 0,
+            filter: String::new(),
+            editing_filter: false,
+            status_message: Some("Loading music library...".to_string()),
         }
     }
 
-    pub fn expand_current(&mut self) {
-        if let Some(ref mut tree) = self.tree {
-            Self::toggle_node(tree, self.tree_cursor, 0, true);
-            // Va sur le premier enfant
-            self.tree_cursor += 1;
-        }
-    }
-
-    fn collapse_all(node: &mut TreeNode) {
-        node.expanded = false;
-        for child in &mut node.children {
-            Self::collapse_all(child);
-        }
-    }
-
-    fn collapse_current(&mut self) {
-        if let Some(ref mut tree) = self.tree {
-            Self::toggle_node(tree, self.tree_cursor, 0, false);
-        }
-    }
-
-    fn toggle_node(node: &mut TreeNode, target: usize, current: usize, expand: bool) -> usize {
-        if current == target && node.is_dir {
-            node.expanded = expand;
-            return current + 1;
-        }
-        let mut idx = current + 1;
-        if node.expanded {
-            for child in &mut node.children {
-                idx = Self::toggle_node(child, target, idx, expand);
-            }
-        }
-        idx
-    }
-
-    fn is_audio_static(path: &Path) -> bool {
+    fn is_audio(path: &Path) -> bool {
         path.extension()
-            .and_then(|e| e.to_str())
-            .map(|e| {
+            .and_then(|ext| ext.to_str())
+            .map(|ext| {
                 matches!(
-                    e.to_lowercase().as_str(),
+                    ext.to_lowercase().as_str(),
                     "mp3" | "flac" | "wav" | "ogg" | "m4a" | "aac"
                 )
             })
             .unwrap_or(false)
     }
 
-    fn cache_path(cache_dir: &Path, fp: &[u8; 32]) -> PathBuf {
-        let hex: String = fp.iter().map(|byte| format!("{byte:02x}")).collect();
+    fn cache_path(cache_dir: &Path, fingerprint: &[u8; 32]) -> PathBuf {
+        let hex: String = fingerprint
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
         cache_dir.join(format!("music-tree-{hex}.kpack"))
     }
 
     fn save_tree_kpack(tree: &TreeNode, path: &Path) -> io::Result<()> {
-        let bytes = bincode::serialize(tree).map_err(|e| std::io::Error::other(e.to_string()))?;
+        let bytes = bincode::serialize(tree).map_err(io::Error::other)?;
         let parent = path
             .parent()
             .ok_or_else(|| io::Error::other("cache has no parent"))?;
@@ -1750,7 +337,7 @@ impl MusicPlayer {
             let entry = entry.map_err(io::Error::other)?;
             let path = entry.path();
             let is_dir = entry.file_type().is_dir();
-            if !is_dir && !(entry.file_type().is_file() && Self::is_audio_static(path)) {
+            if !is_dir && !(entry.file_type().is_file() && Self::is_audio(path)) {
                 continue;
             }
             while stack.len() > entry.depth() {
@@ -1765,8 +352,8 @@ impl MusicPlayer {
             hasher.update(path_text.as_bytes());
             hasher.update(&[u8::from(is_dir)]);
             hasher.update(&metadata.len().to_le_bytes());
-            let modified = metadata.modified()?;
-            let timestamp = modified
+            let timestamp = metadata
+                .modified()?
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(io::Error::other)?;
             hasher.update(&timestamp.as_nanos().to_le_bytes());
@@ -1778,21 +365,8 @@ impl MusicPlayer {
                 parent.track_count += 1;
                 parent
                     .children
-                    .push(TreeNode::new(name.clone(), path.to_path_buf(), false));
-                tracks.push(TrackItem {
-                    id: name.clone(),
-                    name,
-                    artists: vec!["Local".to_string()],
-                    album_name: dir.display().to_string(),
-                    duration_ms: 0,
-                    uri: path.display().to_string(),
-                    preview_url: None,
-                    popularity: None,
-                    is_playable: true,
-                    source: AudioSource::LocalFile {
-                        path: path.to_path_buf(),
-                    },
-                });
+                    .push(TreeNode::new(name, path.to_path_buf(), false));
+                tracks.push(path.to_path_buf());
             }
         }
         while stack.len() > 1 {
@@ -1818,9 +392,7 @@ impl MusicPlayer {
                         notice = Some(format!("Music cache write failed: {error}"));
                     }
                 }
-                Err(error) => {
-                    notice = Some(format!("Music cache read failed: {error}"));
-                }
+                Err(error) => notice = Some(format!("Music cache read failed: {error}")),
             }
         }
         Ok(LocalLibrary {
@@ -1832,15 +404,37 @@ impl MusicPlayer {
 
     pub(crate) fn apply_library(&mut self, library: LocalLibrary) {
         self.tree = Some(library.tree);
-        self.queue.extend(library.tracks);
-        self.set_status(
-            library
-                .notice
-                .unwrap_or_else(|| format!("Loaded {} local tracks.", self.queue.len())),
-        );
+        self.tracks = library.tracks;
+        let message = library
+            .notice
+            .unwrap_or_else(|| format!("Loaded {} local tracks.", self.tracks.len()));
+        self.set_library_status(message);
+        self.rebuild_visible();
     }
 
-    /// Reloads the local library synchronously; qwx itself uses the background loader.
+    pub(crate) fn set_library_status(&mut self, message: String) {
+        self.set_status(match &self.playlist_error {
+            Some(error) => format!("{error} | {message}"),
+            None => message,
+        });
+    }
+
+    pub(crate) fn apply_playlist(&mut self, result: io::Result<(PathBuf, Vec<PathBuf>)>) {
+        match result {
+            Ok((path, tracks)) => {
+                self.playlist_path = Some(path);
+                self.playlist = tracks;
+                self.rebuild_visible();
+            }
+            Err(error) => {
+                let message = format!("Playlist load failed: {error}");
+                self.playlist_error = Some(message.clone());
+                self.set_status(message);
+            }
+        }
+    }
+
+    /// Reloads the local library synchronously; qwx uses the background loader.
     pub fn load_local_music(&mut self) {
         let Some(dir) = dirs::audio_dir().or_else(dirs::home_dir) else {
             self.set_status("Music directory not found.");
@@ -1848,1698 +442,387 @@ impl MusicPlayer {
         };
         let cache_dir = dirs::config_dir().map(|dir| dir.join("qwx"));
         match Self::scan_library(&dir, cache_dir.as_deref(), &AtomicBool::new(false)) {
-            Ok(library) => {
-                self.queue.clear();
-                self.apply_library(library);
-            }
+            Ok(library) => self.apply_library(library),
             Err(error) => self.set_status(format!("Music library error: {error}")),
         }
     }
 
-    /// Sets status message.
-    pub fn set_status(&mut self, msg: impl Into<String>) {
-        self.status_message = Some(msg.into());
+    pub fn set_status(&mut self, message: impl Into<String>) {
+        self.status_message = Some(message.into());
     }
 
-    pub(crate) fn refresh_playback_in_background(&mut self) {
-        if self.playback_refresh.is_some() {
-            return;
-        }
-        if !self.client.credentials.is_configured() {
-            return;
-        }
-        let client = self.client.clone();
-        let (sender, receiver) = mpsc::channel();
-        match thread::Builder::new()
-            .name("qwx-spotify-refresh".to_string())
-            .spawn(move || {
-                let _ = sender.send(client.get_playback_state());
-            }) {
-            Ok(_) => self.playback_refresh = Some(receiver),
-            Err(error) => self.set_status(format!("Spotify refresh failed: {error}")),
-        }
-    }
-
-    pub(crate) fn poll_playback_refresh(&mut self) {
-        let Some(receiver) = &self.playback_refresh else {
-            return;
-        };
-        match receiver.try_recv() {
-            Ok(result) => {
-                self.playback_refresh = None;
-                match result {
-                    Ok(Some(state)) => self.playback = state,
-                    Ok(None) => self.playback.is_playing = false,
-                    Err(error) => self.set_status(format!("Spotify sync: {error}")),
-                }
-            }
-            Err(TryRecvError::Disconnected) => {
-                self.playback_refresh = None;
-                self.set_status("Spotify refresh worker stopped unexpectedly.");
-            }
-            Err(TryRecvError::Empty) => {}
-        }
-    }
-
-    /// Refreshes playback status and devices from Spotify API.
-    pub fn refresh_playback_state(&mut self) {
-        self.playback_refresh = None;
-        match self.client.get_playback_state() {
-            Ok(Some(state)) => {
-                self.playback = state;
-            }
-            Ok(None) => {
-                self.playback.is_playing = false;
-            }
-            Err(e) => {
-                // If token missing, inform user gently
-                if !self.client.credentials.is_configured() {
-                    self.set_status("Spotify not connected. Press [t] to configure token.");
-                } else {
-                    self.set_status(format!("Spotify sync: {}", e));
-                }
+    fn append_visible(
+        node: &TreeNode,
+        depth: usize,
+        filter: &str,
+        parent_matches: bool,
+        visible: &mut Vec<VisibleNode>,
+    ) -> bool {
+        let matching = parent_matches || node.name.to_lowercase().contains(filter);
+        let start = visible.len();
+        visible.push(VisibleNode {
+            name: node.name.clone(),
+            path: node.path.clone(),
+            depth,
+            is_dir: node.is_dir,
+            expanded: node.expanded || !filter.is_empty(),
+            is_favorite: node.is_favorite,
+            track_count: node.track_count,
+        });
+        if node.is_dir && (node.expanded || !filter.is_empty()) {
+            for child in &node.children {
+                Self::append_visible(child, depth + 1, filter, matching, visible);
             }
         }
-    }
-
-    /// Refreshes Spotify Connect devices.
-    pub fn refresh_devices(&mut self) {
-        match self.client.get_devices() {
-            Ok(devs) => {
-                self.devices = devs;
-                self.set_status(format!("Found {} playback devices.", self.devices.len()));
-            }
-            Err(e) => {
-                self.set_status(format!("Devices error: {}", e));
-            }
-        }
-    }
-
-    /// Refreshes featured playlists / user playlists.
-    pub fn refresh_playlists(&mut self) {
-        match self.client.get_featured_playlists() {
-            Ok(list) => {
-                self.playlists = list;
-                self.set_status(format!("Loaded {} playlists.", self.playlists.len()));
-            }
-            Err(e) => {
-                self.set_status(format!("Playlists error: {}", e));
-            }
-        }
-    }
-
-    /// Executes the current search query.
-    pub fn perform_search(&mut self) {
-        if self.search_query.trim().is_empty() {
-            return;
-        }
-        self.set_status(format!("Searching Spotify for '{}'...", self.search_query));
-        match self.client.search(&self.search_query, 10) {
-            Ok(results) => {
-                let count = results.tracks.len() + results.albums.len() + results.playlists.len();
-                self.search_results = results;
-                self.selected_index = 0;
-                self.scroll_offset = 0;
-                self.set_status(format!(
-                    "Found {} results for '{}'.",
-                    count, self.search_query
-                ));
-            }
-            Err(e) => {
-                self.set_status(format!("Search failed: {}", e));
-            }
-        }
-    }
-
-    /// Toggle play/pause.
-    pub fn toggle_play_pause(&mut self) {
-        self.playback_refresh = None;
-        if let Some(sink) = &self.current_sink {
-            let result = sink
-                .lock()
-                .map(|sink| {
-                    if sink.is_paused() {
-                        sink.play();
-                        true
-                    } else {
-                        sink.pause();
-                        false
-                    }
-                })
-                .map_err(|error| error.to_string());
-            match result {
-                Ok(playing) => {
-                    self.playback.is_playing = playing;
-                    self.playback.last_synced_at = Some(Instant::now());
-                    self.set_status(if playing {
-                        "Playback resumed."
-                    } else {
-                        "Playback paused."
-                    });
-                }
-                Err(error) => self.set_status(format!("Playback error: {error}")),
-            }
-            return;
-        }
-        if self.playback.is_playing {
-            match self.client.pause() {
-                Ok(_) => {
-                    if let Some(synced_at) = self.playback.last_synced_at {
-                        self.playback.progress_ms = self
-                            .playback
-                            .progress_ms
-                            .saturating_add(synced_at.elapsed().as_millis() as u64);
-                    }
-                    self.playback.is_playing = false;
-                    self.playback.last_synced_at = Some(Instant::now());
-                    self.set_status("Playback paused.");
-                }
-                Err(e) => self.set_status(format!("Pause failed: {}", e)),
-            }
+        if !filter.is_empty() && !matching && visible.len() == start + 1 {
+            visible.pop();
+            false
         } else {
-            match self.client.resume() {
-                Ok(_) => {
-                    self.playback.is_playing = true;
-                    self.playback.last_synced_at = Some(Instant::now());
-                    self.set_status("Playback resumed.");
+            true
+        }
+    }
+
+    fn rebuild_visible(&mut self) {
+        self.visible.clear();
+        match self.view {
+            PlayerView::Tree => {
+                if let Some(tree) = &self.tree {
+                    Self::append_visible(
+                        tree,
+                        0,
+                        &self.filter.to_lowercase(),
+                        false,
+                        &mut self.visible,
+                    );
                 }
-                Err(e) => {
-                    // If resume fails, and we have a selected track in search or queue, play it
-                    if let Some(track) = self.queue.first().cloned() {
-                        self.play_track(&track);
-                    } else {
-                        self.set_status(format!("Resume: {}", e));
+            }
+            PlayerView::Playlist => {
+                let filter = self.filter.to_lowercase();
+                for path in &self.playlist {
+                    let name = path
+                        .file_name()
+                        .unwrap_or(path.as_os_str())
+                        .to_string_lossy()
+                        .into_owned();
+                    if name.to_lowercase().contains(&filter) {
+                        self.visible.push(VisibleNode {
+                            name,
+                            path: path.clone(),
+                            depth: 0,
+                            is_dir: false,
+                            expanded: false,
+                            is_favorite: false,
+                            track_count: 0,
+                        });
                     }
                 }
             }
         }
-    }
-
-    /// Plays a specific track.
-    pub fn play_track(&mut self, track: &TrackItem) {
-        self.playback_refresh = None;
-        self.set_status(format!("Playing '{}'...", track.name));
-        match &track.source {
-            AudioSource::Spotify { uri, .. } => match self.client.play_uri(uri, None) {
-                Ok(_) => {
-                    self.current_sink = None;
-                    self.current_stream = None;
-                    self.current_path = None;
-                    self.playback.is_playing = true;
-                    self.playback.item = Some(track.clone());
-                    self.playback.progress_ms = 0;
-                    self.playback.last_synced_at = Some(Instant::now());
-                    self.set_status(format!(
-                        "▶ Now Playing: {} - {}",
-                        track.name,
-                        track.artists_str()
-                    ));
-                }
-                Err(e) => {
-                    self.set_status(format!("Play error: {}", e));
-                }
-            },
-            AudioSource::LocalFile { path } => {
-                match play_local_flac(
-                    path,
-                    &mut self.current_sink,
-                    &mut self.current_stream,
-                    &mut self.current_path,
-                ) {
-                    Ok(()) => {
-                        self.playback.is_playing = true;
-                        self.playback.item = Some(track.clone());
-                        self.playback.progress_ms = 0;
-                        self.playback.last_synced_at = Some(Instant::now());
-                        self.set_status(format!(
-                            "▶ Now Playing (FLAC): {} - {}",
-                            track.name,
-                            track.artists_str()
-                        ));
-                    }
-                    Err(e) => {
-                        self.set_status(format!("Local play error: {}", e));
-                    }
-                }
-            }
+        self.cursor = self.cursor.min(self.visible.len().saturating_sub(1));
+        if self.view == PlayerView::Tree && self.playback.is_some() {
+            self.send_playback(PlaybackCommand::Tree(self.visible_tracks()));
         }
     }
 
-    pub fn play_context(&mut self, uri: &str, name: &str) {
-        self.playback_refresh = None;
-        self.set_status(format!("Playing '{}'...", name));
-        match self.client.play_uri(uri, None) {
-            Ok(_) => {
-                self.current_sink = None;
-                self.current_stream = None;
-                self.current_path = None;
-                self.playback.is_playing = true;
-                self.playback.progress_ms = 0;
-                self.playback.last_synced_at = Some(Instant::now());
-                self.refresh_playback_state();
-                self.set_status(format!("▶ Playing: {name}"));
-            }
-            Err(e) => self.set_status(format!("Play context error: {e}")),
-        }
+    fn visible_tracks(&self) -> Vec<PathBuf> {
+        self.visible
+            .iter()
+            .filter(|node| !node.is_dir)
+            .map(|node| node.path.clone())
+            .collect()
     }
 
-    /// Skips to the next track.
-    pub fn next_track(&mut self) {
-        self.playback_refresh = None;
-        if self.current_path.is_some() {
-            self.play_local_neighbor(true);
-            return;
-        }
-        match self.client.next() {
-            Ok(_) => {
-                self.refresh_playback_state();
-                self.set_status("⏭ Skipped to next track.");
-            }
-            Err(e) => self.set_status(format!("Next track error: {}", e)),
-        }
+    fn filter_changed(&mut self) {
+        self.cursor = 0;
+        self.scroll = 0;
+        self.rebuild_visible();
     }
 
-    /// Skips to previous track.
-    pub fn prev_track(&mut self) {
-        self.playback_refresh = None;
-        if self.current_path.is_some() {
-            self.play_local_neighbor(false);
-            return;
-        }
-        match self.client.previous() {
-            Ok(_) => {
-                self.refresh_playback_state();
-                self.set_status("⏮ Skipped to previous track.");
-            }
-            Err(e) => self.set_status(format!("Previous track error: {}", e)),
-        }
-    }
-
-    /// Adjusts volume by delta (+/- percent).
-    pub fn adjust_volume(&mut self, delta: i32) {
-        self.playback_refresh = None;
-        let current = self.playback.volume_percent as i32;
-        let new_vol = (current + delta).clamp(0, 100) as u32;
-        if let Some(sink) = &self.current_sink {
-            let result = sink
-                .lock()
-                .map(|sink| sink.set_volume(new_vol as f32 / 100.0))
-                .map_err(|error| error.to_string());
-            match result {
-                Ok(()) => {}
+    fn play_path(&mut self, path: &Path) {
+        if self.playback.is_none() {
+            match Playback::start(self.volume, self.repeat) {
+                Ok(playback) => self.playback = Some(playback),
                 Err(error) => {
-                    self.set_status(format!("Volume error: {error}"));
+                    self.set_status(format!("Audio worker failed: {error}"));
                     return;
                 }
             }
-            self.playback.volume_percent = new_vol;
-            self.set_status(format!("Volume: {new_vol}%"));
+        }
+        let playlist = self.view == PlayerView::Playlist;
+        let tracks = if playlist {
+            self.playlist.clone()
+        } else {
+            self.visible_tracks()
+        };
+        self.send_playback(PlaybackCommand::Play {
+            path: path.to_path_buf(),
+            tracks,
+            playlist,
+        });
+    }
+
+    fn send_playback(&mut self, command: PlaybackCommand) -> bool {
+        match &self.playback {
+            Some(playback) => {
+                if playback.sender.send(command).is_err() {
+                    self.playback = None;
+                    self.current_path = None;
+                    self.set_status("Audio worker stopped unexpectedly.");
+                    false
+                } else {
+                    true
+                }
+            }
+            None => {
+                self.set_status("Select a track to play.");
+                false
+            }
+        }
+    }
+
+    fn poll_playback(&mut self) {
+        let Some(playback) = &self.playback else {
+            return;
+        };
+        if playback.thread.is_finished() {
+            self.playback = None;
+            self.current_path = None;
+            self.set_status("Audio worker stopped unexpectedly.");
             return;
         }
-        self.playback.volume_percent = new_vol;
-        let _ = self.client.set_volume(new_vol);
-        self.set_status(format!("Volume: {}%", new_vol));
-    }
-
-    /// Toggles shuffle mode.
-    pub fn toggle_shuffle(&mut self) {
-        let new_state = !self.playback.shuffle_state;
-        self.playback.shuffle_state = new_state;
-        match self.client.set_shuffle(new_state) {
-            Ok(_) => {
-                self.set_status(format!("Shuffle: {}", if new_state { "ON" } else { "OFF" }));
+        let update = playback
+            .state
+            .lock()
+            .map(|state| (state.revision, state.current.clone(), state.status.clone()))
+            .map_err(|error| error.to_string());
+        match update {
+            Ok((revision, current, status)) if revision != self.playback_revision => {
+                self.playback_revision = revision;
+                self.current_path = current;
+                self.status_message = status;
             }
-            Err(e) => self.set_status(format!("Shuffle error: {}", e)),
-        }
-    }
-
-    /// Cycles repeat mode.
-    pub fn cycle_repeat(&mut self) {
-        let next_mode = self.playback.repeat_state.next();
-        self.playback.repeat_state = next_mode;
-        match self.client.set_repeat(next_mode) {
-            Ok(_) => {
-                self.set_status(format!("Repeat: {:?}", next_mode));
+            Ok(_) => {}
+            Err(error) => {
+                self.set_status(format!("Audio state error: {error}"));
             }
-            Err(e) => self.set_status(format!("Repeat error: {}", e)),
         }
     }
 
-    /// Adds a track to the play queue.
-    pub fn add_to_queue(&mut self, track: TrackItem) {
-        let name = track.name.clone();
-        self.queue.push(track);
-        self.set_status(format!(
-            "Added '{}' to queue ({} items).",
-            name,
-            self.queue.len()
-        ));
-    }
-
-    /// Cycles through active tabs.
-    pub fn next_tab(&mut self) {
-        let tabs = PlayerTab::all();
-        let idx = tabs.iter().position(|t| *t == self.active_tab).unwrap_or(0);
-        self.active_tab = tabs[(idx + 1) % tabs.len()];
-        self.selected_index = 0;
-        self.scroll_offset = 0;
-        self.on_tab_switched();
-    }
-    /// Switches the active tab to the previous tab in the available list of tabs.
-    ///
-    /// This function cycles through all available `PlayerTab` entries in reverse order.
-    /// If the currently active tab is the first in the list, it wraps around to the last tab.
-    /// Upon switching the tab, the following adjustments are made:
-    /// - Sets the `selected_index` to 0.
-    /// - Resets the `scroll_offset` to 0.
-    /// - Triggers the `on_tab_switched` callback to handle any actions or updates required
-    ///   upon tab change.
-    ///
-    /// # Assumptions
-    /// - The `PlayerTab::all()` function returns a list of all available `PlayerTab` items
-    ///   in a consistent and deterministic order.
-    /// - The `active_tab` field represents the tab currently active in the player.
-    ///
-    /// # Panics
-    /// - If `PlayerTab::all()` returns an empty list (unlikely scenario), this function
-    ///   may panic due to accessing an index that doesn't exist.
-    ///
-    pub fn prev_tab(&mut self) {
-        let tabs = PlayerTab::all();
-        let idx = tabs.iter().position(|t| *t == self.active_tab).unwrap_or(0);
-        self.active_tab = tabs[(idx + tabs.len() - 1) % tabs.len()];
-        self.selected_index = 0;
-        self.scroll_offset = 0;
-        self.on_tab_switched();
-    }
-
-    pub fn set_tab(&mut self, tab: PlayerTab) {
-        self.active_tab = tab;
-        self.selected_index = 0;
-        self.scroll_offset = 0;
-        self.on_tab_switched();
-    }
-
-    fn on_tab_switched(&mut self) {
-        match self.active_tab {
-            PlayerTab::NowPlaying => self.refresh_playback_state(),
-            PlayerTab::Devices => self.refresh_devices(),
-            PlayerTab::Playlists if self.playlists.is_empty() => {
-                self.refresh_playlists();
-            }
-            _ => {}
-        }
-    }
-
-    /// Moves cursor down in the list.
-    pub fn move_down(&mut self) {
-        let count = self.current_tab_item_count();
-        if count > 0 && self.selected_index + 1 < count {
-            self.selected_index += 1;
-        }
-    }
-
-    /// Moves cursor up in the list.
-    pub fn move_up(&mut self) {
-        if self.selected_index > 0 {
-            self.selected_index -= 1;
-        }
-    }
-
-    /// Returns item count in the current tab view.
-    pub fn current_tab_item_count(&self) -> usize {
-        match self.active_tab {
-            PlayerTab::NowPlaying => 0,
-            PlayerTab::Search => match self.search_category {
-                SearchCategory::Tracks => self.search_results.tracks.len(),
-                SearchCategory::Albums => self.search_results.albums.len(),
-                SearchCategory::Playlists => self.search_results.playlists.len(),
-                SearchCategory::Artists => 0,
-            },
-            PlayerTab::Queue => self.queue.len(),
-            PlayerTab::Playlists => self.playlists.len(),
-            PlayerTab::Devices => self.devices.len(),
-            PlayerTab::Config => 4,
-        }
-    }
-
-    /// Handles activation / Enter on the current selected list item.
-
-    fn play_local_neighbor(&mut self, next: bool) {
-        let current = self.current_path.as_deref();
-        let index = self.queue.iter().position(|track| {
-            matches!(&track.source, AudioSource::LocalFile { path } if Some(path.as_path()) == current)
-        });
-        let track = index
-            .and_then(|index| {
-                if next {
-                    self.queue[index + 1..]
-                        .iter()
-                        .find(|track| matches!(track.source, AudioSource::LocalFile { .. }))
-                } else {
-                    self.queue[..index]
-                        .iter()
-                        .rev()
-                        .find(|track| matches!(track.source, AudioSource::LocalFile { .. }))
-                }
-            })
-            .cloned();
-        if let Some(track) = track {
-            self.play_track(&track);
+    fn adjust_volume(&mut self, delta: i32) {
+        self.volume = (self.volume as i32 + delta).clamp(0, 100) as u32;
+        if self.playback.is_some() {
+            self.send_playback(PlaybackCommand::Volume(self.volume));
         } else {
-            self.set_status(if next {
-                "No next local track."
-            } else {
-                "No previous local track."
-            });
+            self.set_status(format!("Volume: {}%", self.volume));
         }
     }
 
-    fn play_tree_selection(&mut self) {
-        if let Some(tree) = &self.tree
-            && let Some(node) = self.get_node_at(tree, self.tree_cursor, 0)
-            && !node.is_dir
-        {
-            let track = self.queue.iter().find(|track| {
-                matches!(&track.source, AudioSource::LocalFile { path } if path == &node.path)
-            }).cloned();
-            if let Some(track) = track {
-                self.play_track(&track);
-            } else {
-                self.set_status("Selected track is not in the library.");
-            }
-        }
-    }
-
-    fn get_node_at<'a>(
-        &self,
-        node: &'a TreeNode,
-        target: usize,
-        current: usize,
-    ) -> Option<&'a TreeNode> {
-        if current == target {
-            return Some(node);
-        }
-        let mut idx = current + 1;
-        if node.expanded {
-            for child in &node.children {
-                if let Some(found) = self.get_node_at(child, target, idx) {
-                    return Some(found);
-                }
-                idx += 1;
-                if child.expanded {
-                    idx += self.count_visible(child);
-                }
-            }
-        }
-        None
-    }
-
-    fn total_visible(&self) -> usize {
-        if let Some(ref tree) = self.tree {
-            self.count_visible(tree) + 1
-        } else {
-            0
-        }
-    }
-
-    fn count_visible(&self, node: &TreeNode) -> usize {
-        let mut count = 0;
-        if node.expanded {
-            for child in &node.children {
-                count += 1;
-                if child.expanded {
-                    count += self.count_visible(child);
-                }
-            }
-        }
-        count
-    }
-
-    pub fn handle_enter_selection(&mut self) {
-        match self.active_tab {
-            PlayerTab::Search => match self.search_category {
-                SearchCategory::Tracks => {
-                    if let Some(track) =
-                        self.search_results.tracks.get(self.selected_index).cloned()
-                    {
-                        self.play_track(&track);
-                    }
-                }
-                SearchCategory::Albums => {
-                    if let Some(album) =
-                        self.search_results.albums.get(self.selected_index).cloned()
-                    {
-                        self.play_context(&album.uri, &album.name);
-                    }
-                }
-                SearchCategory::Playlists => {
-                    if let Some(pl) = self
-                        .search_results
-                        .playlists
-                        .get(self.selected_index)
-                        .cloned()
-                    {
-                        self.play_context(&pl.uri, &pl.name);
-                    }
-                }
-                SearchCategory::Artists => {}
-            },
-            PlayerTab::Queue => {
-                if let Some(track) = self.queue.get(self.selected_index).cloned() {
-                    self.play_track(&track);
-                }
-            }
-            PlayerTab::Playlists => {
-                if let Some(pl) = self.playlists.get(self.selected_index).cloned() {
-                    self.play_context(&pl.uri, &pl.name);
-                }
-            }
-            PlayerTab::Devices => {
-                if let Some(dev) = self.devices.get(self.selected_index).cloned() {
-                    self.set_status(format!("Transferring playback to '{}'...", dev.name));
-                    match self.client.transfer_playback(&dev.id, true) {
-                        Ok(_) => {
-                            self.set_status(format!("Active device set to '{}'.", dev.name));
-                            self.refresh_devices();
-                        }
-                        Err(e) => self.set_status(format!("Transfer error: {}", e)),
-                    }
-                }
-            }
-            PlayerTab::Config => match self.selected_index {
-                0 => {
-                    self.active_prompt = PlayerPrompt::TokenInput;
-                    self.prompt_input.clear();
-                }
-                1 => {
-                    self.active_prompt = PlayerPrompt::ClientIdInput;
-                    self.prompt_input.clear();
-                }
-                2 => {
-                    self.active_prompt = PlayerPrompt::ClientSecretInput;
-                    self.prompt_input.clear();
-                }
-                3 => match self.client.request_client_credentials_token() {
-                    Ok(tok) => self.set_status(format!(
-                        "Token retrieved! ({}...)",
-                        &tok[..10.min(tok.len())]
-                    )),
-                    Err(e) => self.set_status(format!("Auth Error: {}", e)),
-                },
-                _ => {}
-            },
-            PlayerTab::NowPlaying => {
-                self.toggle_play_pause();
-            }
-        }
-    }
-
-    /// Seeks playback relative to the current position by delta_sec (+/-).
-    pub fn seek_relative(&mut self, delta_sec: i64) {
-        let current_ms = self.playback.progress_ms as i64;
-        let delta_ms = delta_sec * 1000;
-        let target_ms = (current_ms + delta_ms).max(0) as u64;
-        let total_ms = self
-            .playback
-            .item
-            .as_ref()
-            .map(|t| t.duration_ms)
-            .unwrap_or(u64::MAX);
-        let final_ms = target_ms.min(total_ms);
-        self.playback.progress_ms = final_ms;
-        self.playback.last_synced_at = Some(Instant::now());
-        let _ = self.client.seek(final_ms);
-        self.set_status(format!("Seek: {}", format_duration_ms(final_ms)));
-    }
-
-    /// Cycles through search categories (Tracks -> Albums -> Playlists -> Artists).
-    pub fn cycle_search_category(&mut self) {
-        self.search_category = match self.search_category {
-            SearchCategory::Tracks => SearchCategory::Albums,
-            SearchCategory::Albums => SearchCategory::Playlists,
-            SearchCategory::Playlists => SearchCategory::Artists,
-            SearchCategory::Artists => SearchCategory::Tracks,
+    fn change_playlist(&mut self, add: bool) {
+        let Some(path) = self.playlist_path.clone() else {
+            self.set_status(
+                self.playlist_error
+                    .clone()
+                    .unwrap_or_else(|| "Playlist is still loading.".to_string()),
+            );
+            return;
         };
-        self.selected_index = 0;
-        self.scroll_offset = 0;
-        self.set_status(format!("Search category: {}", self.search_category.name()));
+        let Some(node) = self.visible.get(self.cursor) else {
+            self.set_status("No track selected.");
+            return;
+        };
+        if node.is_dir {
+            self.set_status("Select a file, not a directory.");
+            return;
+        }
+        let selected = node.path.clone();
+        let mut tracks = self.playlist.clone();
+        if add {
+            if tracks.contains(&selected) {
+                self.set_status("Track is already in the playlist.");
+                return;
+            }
+            tracks.push(selected);
+        } else if let Some(index) = tracks.iter().position(|track| track == &selected) {
+            tracks.remove(index);
+        } else {
+            self.set_status("Track is not in the playlist.");
+            return;
+        }
+        match save_playlist(&path, &tracks) {
+            Ok(()) => {
+                self.playlist = tracks;
+                let notified = self.playback.is_none()
+                    || self.send_playback(PlaybackCommand::Playlist(self.playlist.clone()));
+                self.rebuild_visible();
+                if notified {
+                    self.set_status(if add {
+                        "Added to playlist."
+                    } else {
+                        "Removed from playlist."
+                    });
+                }
+            }
+            Err(error) => self.set_status(format!("Playlist save failed: {error}")),
+        }
     }
 
-    /// Handles a key input event. Returns false if the player mode should exit.
+    fn set_expanded(&mut self, expanded: bool) {
+        if !self.filter.is_empty() {
+            return;
+        }
+        let Some(selected) = self.visible.get(self.cursor) else {
+            return;
+        };
+        let path = selected.path.clone();
+        if let Some(node) = self.tree.as_mut().and_then(|tree| tree.find_mut(&path))
+            && node.is_dir
+        {
+            node.expanded = expanded;
+            self.rebuild_visible();
+            if expanded
+                && self.cursor + 1 < self.visible.len()
+                && self.visible[self.cursor + 1].depth > self.visible[self.cursor].depth
+            {
+                self.cursor += 1;
+            }
+        }
+    }
+
     pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
-        // If an interactive prompt is active
-        if self.active_prompt != PlayerPrompt::None {
-            match code {
-                KeyCode::Esc => {
-                    self.active_prompt = PlayerPrompt::None;
-                    self.prompt_input.clear();
-                    self.set_status("Input cancelled.");
+        if self.editing_filter {
+            match (modifiers, code) {
+                (KeyModifiers::NONE, KeyCode::Esc) => {
+                    self.editing_filter = false;
+                    self.filter.clear();
+                    self.filter_changed();
                 }
-                KeyCode::Enter => {
-                    self.submit_prompt();
+                (KeyModifiers::NONE, KeyCode::Enter) => self.editing_filter = false,
+                (KeyModifiers::NONE, KeyCode::Backspace) => {
+                    self.filter.pop();
+                    self.filter_changed();
                 }
-                KeyCode::Backspace => {
-                    self.prompt_input.pop();
-                }
-                KeyCode::Char(c)
-                    if (modifiers == KeyModifiers::NONE || modifiers == KeyModifiers::SHIFT) =>
-                {
-                    self.prompt_input.push(c);
+                (m, KeyCode::Char(c)) if m.is_empty() || m == KeyModifiers::SHIFT => {
+                    self.filter.push(c);
+                    self.filter_changed();
                 }
                 _ => {}
             }
             return true;
         }
 
-        // Global commands when no prompt is active
         match (modifiers, code) {
-            // Exit player
-            (KeyModifiers::NONE, KeyCode::Esc) | (KeyModifiers::NONE, KeyCode::Char('q')) => {
-                return false;
+            (KeyModifiers::NONE, KeyCode::Esc) if !self.filter.is_empty() => {
+                self.filter.clear();
+                self.filter_changed();
             }
-
-            // Tabs navigation
-            (KeyModifiers::NONE, KeyCode::Tab) => self.next_tab(),
-            (KeyModifiers::SHIFT, KeyCode::BackTab) | (KeyModifiers::SHIFT, KeyCode::Tab) => {
-                self.prev_tab()
-            }
-
-            (KeyModifiers::NONE, KeyCode::Char('1')) => self.set_tab(PlayerTab::Search),
-            (KeyModifiers::NONE, KeyCode::Char('2')) => self.set_tab(PlayerTab::Queue),
-            (KeyModifiers::NONE, KeyCode::Char('3')) => self.set_tab(PlayerTab::Playlists),
-            (KeyModifiers::NONE, KeyCode::Char('4')) => self.set_tab(PlayerTab::Devices),
-            (KeyModifiers::NONE, KeyCode::Char('5')) => self.set_tab(PlayerTab::Config),
-            // Playback controls
-            (KeyModifiers::NONE, KeyCode::Char(' ')) => self.toggle_play_pause(),
-            (KeyModifiers::NONE, KeyCode::Char('n'))
-            | (KeyModifiers::NONE, KeyCode::Char('>'))
-            | (KeyModifiers::NONE, KeyCode::Media(crossterm::event::MediaKeyCode::TrackNext)) => {
-                self.next_track();
-            }
-            (KeyModifiers::NONE, KeyCode::Char('p'))
-            | (KeyModifiers::NONE, KeyCode::Char('<'))
-            | (KeyModifiers::NONE, KeyCode::Media(crossterm::event::MediaKeyCode::TrackPrevious)) =>
-            {
-                self.prev_track();
-            }
-            (KeyModifiers::NONE, KeyCode::Char('+'))
-            | (KeyModifiers::NONE, KeyCode::Char('='))
-            | (KeyModifiers::NONE, KeyCode::Char(']')) => {
-                self.adjust_volume(5);
-            }
-            (KeyModifiers::NONE, KeyCode::Char('-'))
-            | (KeyModifiers::NONE, KeyCode::Char('_'))
-            | (KeyModifiers::NONE, KeyCode::Char('[')) => {
-                self.adjust_volume(-5);
-            }
-            (KeyModifiers::NONE, KeyCode::Right) => {
-                if self.active_tab == PlayerTab::NowPlaying {
-                    self.seek_relative(5);
-                } else {
-                    self.next_tab();
-                }
-            }
-            (KeyModifiers::NONE, KeyCode::Left) => {
-                if self.active_tab == PlayerTab::NowPlaying {
-                    self.seek_relative(-5);
-                } else {
-                    self.prev_tab();
-                }
-            }
-            (KeyModifiers::NONE, KeyCode::Char('z')) | (KeyModifiers::NONE, KeyCode::Char('s')) => {
-                self.toggle_shuffle();
-            }
-            (KeyModifiers::NONE, KeyCode::Char('r')) => {
-                self.cycle_repeat();
-            }
-            (KeyModifiers::SHIFT, KeyCode::Char('R')) | (KeyModifiers::NONE, KeyCode::F(5)) => {
-                self.refresh_playback_state();
-                self.refresh_devices();
-                self.refresh_playlists();
-                self.set_status("Player state refreshed.");
-            }
-
-            // List Navigation
-            (KeyModifiers::NONE, KeyCode::Char('j')) => {
-                if self.tree.is_some() {
-                    let max = self.total_visible().saturating_sub(1);
-                    if self.tree_cursor < max {
-                        self.tree_cursor += 1;
-                    }
-                } else {
-                    self.move_down();
-                }
-            }
-            (KeyModifiers::NONE, KeyCode::Char('k')) => {
-                if self.tree.is_some() {
-                    self.tree_cursor = self.tree_cursor.saturating_sub(1);
-                } else {
-                    self.move_up();
-                }
-            }
-            (KeyModifiers::NONE, KeyCode::PageDown) => {
-                for _ in 0..5 {
-                    self.move_down();
-                }
-            }
-            (KeyModifiers::NONE, KeyCode::PageUp) => {
-                for _ in 0..5 {
-                    self.move_up();
-                }
-            }
-            (KeyModifiers::NONE, KeyCode::Home) | (KeyModifiers::NONE, KeyCode::Char('g')) => {
-                self.selected_index = 0;
-            }
-            (KeyModifiers::NONE, KeyCode::End) | (KeyModifiers::SHIFT, KeyCode::Char('G')) => {
-                let count = self.current_tab_item_count();
-                if count > 0 {
-                    self.selected_index = count - 1;
-                }
-            }
-            (KeyModifiers::NONE, KeyCode::Char('h')) => {
-                self.collapse_current();
-            }
-            (KeyModifiers::NONE, KeyCode::Char('x')) => {
-                if let Some(ref mut tree) = self.tree {
-                    Self::collapse_all(tree);
-                    self.tree_cursor = 0;
-                }
-            }
-            (KeyModifiers::NONE, KeyCode::Char('l')) => {
-                self.expand_current();
-            }
-            (KeyModifiers::NONE, KeyCode::Enter) => {
-                if self.tree.is_some() {
-                    self.play_tree_selection();
-                } else {
-                    self.handle_enter_selection();
-                }
-            }
-
-            // Interactive prompts and category actions
+            (KeyModifiers::NONE, KeyCode::Esc | KeyCode::Char('q')) => return false,
             (KeyModifiers::NONE, KeyCode::Char('/')) => {
-                if self.tree.is_some() {
-                    self.tree_filter.clear();
-                    self.set_status("Filter: ");
-                } else {
-                    self.active_prompt = PlayerPrompt::Search;
-                    self.prompt_input.clear();
-                    if self.active_tab != PlayerTab::Search {
-                        self.active_tab = PlayerTab::Search;
-                    }
-                }
-            }
-            (KeyModifiers::NONE, KeyCode::Char('c')) if self.active_tab == PlayerTab::Search => {
-                self.cycle_search_category();
-            }
-            (KeyModifiers::NONE, KeyCode::Char('a')) => {
-                if self.active_tab == PlayerTab::Search
-                    && self.search_category == SearchCategory::Tracks
-                    && let Some(track) =
-                        self.search_results.tracks.get(self.selected_index).cloned()
-                {
-                    self.add_to_queue(track);
-                }
-            }
-            (KeyModifiers::NONE, KeyCode::Char('d')) | (KeyModifiers::NONE, KeyCode::Delete) => {
-                if self.active_tab == PlayerTab::Queue && !self.queue.is_empty() {
-                    let removed = self.queue.remove(self.selected_index);
-                    if self.selected_index >= self.queue.len() && self.selected_index > 0 {
-                        self.selected_index -= 1;
-                    }
-                    self.set_status(format!("Removed '{}' from queue.", removed.name));
-                }
+                self.editing_filter = true;
+                self.filter.clear();
+                self.filter_changed();
             }
             (KeyModifiers::NONE, KeyCode::Char('t')) => {
-                self.active_prompt = PlayerPrompt::TokenInput;
-                self.prompt_input.clear();
+                self.view = if self.view == PlayerView::Tree {
+                    PlayerView::Playlist
+                } else {
+                    PlayerView::Tree
+                };
+                self.cursor = 0;
+                self.scroll = 0;
+                self.rebuild_visible();
             }
-            (KeyModifiers::NONE, KeyCode::Char('v')) => {
-                self.active_prompt = PlayerPrompt::VolumeInput;
-                self.prompt_input.clear();
+            (KeyModifiers::NONE, KeyCode::Char('r')) => {
+                self.repeat = self.repeat.next();
+                if self.playback.is_none()
+                    || self.send_playback(PlaybackCommand::Repeat(self.repeat))
+                {
+                    self.set_status(format!("Repeat: {}", self.repeat.label()));
+                }
             }
-            (KeyModifiers::NONE, KeyCode::Char('f')) => {
-                self.active_prompt = PlayerPrompt::SeekInput;
-                self.prompt_input.clear();
+            (KeyModifiers::NONE, KeyCode::Char('a')) if self.view == PlayerView::Tree => {
+                self.change_playlist(true)
             }
-
+            (KeyModifiers::NONE, KeyCode::Char('d') | KeyCode::Delete)
+                if self.view == PlayerView::Playlist =>
+            {
+                self.change_playlist(false)
+            }
+            (KeyModifiers::NONE, KeyCode::Char('j') | KeyCode::Down) => {
+                self.cursor = (self.cursor + 1).min(self.visible.len().saturating_sub(1));
+            }
+            (KeyModifiers::NONE, KeyCode::Char('k') | KeyCode::Up) => {
+                self.cursor = self.cursor.saturating_sub(1);
+            }
+            (KeyModifiers::NONE, KeyCode::Char('g') | KeyCode::Home) => self.cursor = 0,
+            (KeyModifiers::SHIFT, KeyCode::Char('G')) | (KeyModifiers::NONE, KeyCode::End) => {
+                self.cursor = self.visible.len().saturating_sub(1);
+            }
+            (KeyModifiers::NONE, KeyCode::PageDown) => {
+                self.cursor = (self.cursor + 5).min(self.visible.len().saturating_sub(1));
+            }
+            (KeyModifiers::NONE, KeyCode::PageUp) => self.cursor = self.cursor.saturating_sub(5),
+            (KeyModifiers::NONE, KeyCode::Char('l') | KeyCode::Right) => self.set_expanded(true),
+            (KeyModifiers::NONE, KeyCode::Char('h') | KeyCode::Left) => self.set_expanded(false),
+            (KeyModifiers::NONE, KeyCode::Char('x')) if self.filter.is_empty() => {
+                if let Some(tree) = &mut self.tree {
+                    tree.collapse_all();
+                    self.cursor = 0;
+                    self.scroll = 0;
+                    self.rebuild_visible();
+                }
+            }
+            (KeyModifiers::NONE, KeyCode::Enter) => {
+                if let Some(node) = self.visible.get(self.cursor) {
+                    if node.is_dir {
+                        self.set_expanded(!node.expanded);
+                    } else {
+                        let path = node.path.clone();
+                        self.play_path(&path);
+                    }
+                }
+            }
+            (KeyModifiers::NONE, KeyCode::Char(' ')) => {
+                self.send_playback(PlaybackCommand::TogglePause);
+            }
+            (
+                KeyModifiers::NONE,
+                KeyCode::Char('n' | '>') | KeyCode::Media(MediaKeyCode::TrackNext),
+            ) => {
+                if self.playback.is_none() {
+                    let path = if self.view == PlayerView::Playlist {
+                        self.playlist.first().cloned()
+                    } else {
+                        self.visible_tracks().into_iter().next()
+                    };
+                    if let Some(path) = path {
+                        self.play_path(&path);
+                    } else {
+                        self.set_status("No next track.");
+                    }
+                } else {
+                    self.send_playback(PlaybackCommand::Next);
+                }
+            }
+            (
+                KeyModifiers::NONE,
+                KeyCode::Char('p' | '<') | KeyCode::Media(MediaKeyCode::TrackPrevious),
+            ) => {
+                self.send_playback(PlaybackCommand::Previous);
+            }
+            (KeyModifiers::NONE, KeyCode::Char('+' | '=' | ']')) => self.adjust_volume(5),
+            (KeyModifiers::NONE, KeyCode::Char('-' | '_' | '[')) => self.adjust_volume(-5),
             _ => {}
         }
         true
     }
 
-    /// Submits the current active prompt input.
-    pub fn submit_prompt(&mut self) {
-        let input = self.prompt_input.trim().to_string();
-        let prompt = self.active_prompt.clone();
-        self.active_prompt = PlayerPrompt::None;
-        self.prompt_input.clear();
-
-        match prompt {
-            PlayerPrompt::Search => {
-                if !input.is_empty() {
-                    self.search_query = input;
-                    self.active_tab = PlayerTab::Search;
-                    self.perform_search();
-                }
-            }
-            PlayerPrompt::TokenInput => {
-                if !input.is_empty() {
-                    self.client.set_token(&input);
-                    self.client.credentials.access_token = Some(input);
-                    let _ = self.client.credentials.save_to_config();
-                    self.refresh_playback_state();
-                    self.refresh_devices();
-                    self.set_status("Spotify token updated.");
-                }
-            }
-            PlayerPrompt::ClientIdInput => {
-                if !input.is_empty() {
-                    self.client.credentials.client_id = Some(input);
-                    let _ = self.client.credentials.save_to_config();
-                    self.set_status("Spotify Client ID updated.");
-                }
-            }
-            PlayerPrompt::ClientSecretInput => {
-                if !input.is_empty() {
-                    self.client.credentials.client_secret = Some(input);
-                    let _ = self.client.credentials.save_to_config();
-                    self.set_status("Spotify Client Secret updated.");
-                }
-            }
-            PlayerPrompt::SeekInput => {
-                if let Ok(sec) = input.parse::<u64>() {
-                    let pos_ms = sec * 1000;
-                    self.playback.progress_ms = pos_ms;
-                    self.playback.last_synced_at = Some(Instant::now());
-                    let _ = self.client.seek(pos_ms);
-                    self.set_status(format!("Seeked to {}s.", sec));
-                } else {
-                    self.set_status("Invalid seek position.");
-                }
-            }
-            PlayerPrompt::VolumeInput => {
-                if let Ok(vol) = input.parse::<u32>() {
-                    let vol = vol.min(100);
-                    self.playback.volume_percent = vol;
-                    let _ = self.client.set_volume(vol);
-                    self.set_status(format!("Volume set to {}%.", vol));
-                } else {
-                    self.set_status("Invalid volume value.");
-                }
-            }
-            PlayerPrompt::None => {}
-        }
-    }
-    pub fn draw_player<W: Write>(&mut self, writer: &mut W, w: u16, h: u16) -> io::Result<()> {
-        // Full black clear
-        queue!(
-            writer,
-            SetBackgroundColor(Color::Black),
-            SetForegroundColor(Color::White),
-            ResetColor,
-            Hide
-        )?;
-        let w_usize = w as usize;
-        let h_usize = h as usize;
-
-        // --- PALETTE DE COULEURS "MUSHIN" (100% Noir) ---
-        let bg_main = Color::Black; // Pure black
-        let fg_border = Color::White;
-        let fg_accent = Color::Green;
-        let fg_normal = Color::White;
-
-        // --- CALCUL DES 3 COLONNES ---
-        let player_h = 5; // 4 pour le lecteur + 1 pour la barre de recherche
-        let content_h = h_usize.saturating_sub(player_h);
-
-        let sidebar_w = (w_usize / 5).max(20);
-        let right_panel_w = (w_usize / 4).max(30);
-        let main_w = w_usize.saturating_sub(sidebar_w + right_panel_w + 2);
-
-        let main_start_x = sidebar_w + 1;
-        let right_start_x = w_usize.saturating_sub(right_panel_w);
-
-        // --- 1. SIDEBAR (Dessin parfait ligne par ligne, 0 scintillement) ---
-        for y in 0..content_h {
-            let mut left_str = format!("{:<width$}", "", width = sidebar_w);
-            let mut left_fg = fg_normal;
-            let mut left_bg = bg_main;
-
-            if y == 1 {
-                left_str = format!(" {:<width$}", "QWX PLAYER", width = sidebar_w - 1);
-                left_fg = fg_accent;
-            } else if y >= 4 && y < 4 + (PlayerTab::all().len() * 2) && (y - 4) % 2 == 0 {
-                let tab_idx = (y - 4) / 2;
-                let tab = PlayerTab::all()[tab_idx];
-                let is_sel = tab == self.active_tab;
-
-                let text = format!(" [{}] {} ", tab.shortcut(), tab.title());
-                left_str = format!("{:<width$}", text, width = sidebar_w);
-
-                if is_sel {
-                    left_fg = Color::Black;
-                    left_bg = fg_accent;
-                } else {
-                    left_fg = fg_normal;
-                }
-            }
-
-            queue!(
-                writer,
-                MoveTo(0, y as u16),
-                SetBackgroundColor(left_bg),
-                SetForegroundColor(left_fg),
-                Print(&left_str),
-                SetBackgroundColor(bg_main),
-                SetForegroundColor(fg_border),
-                Print("│")
-            )?;
-        }
-
-        // --- 2. PANNEAU CENTRAL (Focus) ---
-        match self.active_tab {
-            PlayerTab::Search => {
-                self.draw_search_tab(writer, main_start_x, 0, content_h, main_w)?
-            }
-            PlayerTab::Queue => self.draw_queue_tab(writer, main_start_x, 0, content_h, main_w)?,
-            PlayerTab::Playlists => {
-                self.draw_playlists_tab(writer, main_start_x, 0, content_h, main_w)?
-            }
-            PlayerTab::Devices => {
-                self.draw_devices_tab(writer, main_start_x, 0, content_h, main_w)?
-            }
-            PlayerTab::Config => {
-                self.draw_config_tab(writer, main_start_x, 0, content_h, main_w)?
-            }
-            _ => {}
-        }
-
-        // --- 3. PANNEAU DE DROITE (Contexte & File d'attente) ---
-        self.draw_right_panel(writer, right_start_x, 0, content_h, right_panel_w)?;
-
-        // --- 4. LECTEUR EN BAS (Footer) ---
-        self.draw_bottom_player(writer, content_h, sidebar_w, right_start_x, w_usize)?;
-
-        // --- 5. RECHERCHE INTERACTIVE (Prompt) ---
-        let prompt_y = (h_usize - 1) as u16;
-        if self.active_prompt != PlayerPrompt::None {
-            let prompt_label = match self.active_prompt {
-                PlayerPrompt::Search => " Search Spotify: ",
-                PlayerPrompt::TokenInput => " Spotify OAuth Bearer Token: ",
-                PlayerPrompt::ClientIdInput => " Spotify Client ID: ",
-                PlayerPrompt::ClientSecretInput => " Spotify Client Secret: ",
-                PlayerPrompt::SeekInput => " Seek to Seconds: ",
-                PlayerPrompt::VolumeInput => " Set Volume (0..100): ",
-                PlayerPrompt::None => "",
-            };
-
-            let input_str = format!("{}{}", prompt_label, self.prompt_input);
-            queue!(
-                writer,
-                MoveTo(0, prompt_y),
-                SetBackgroundColor(Color::Black),
-                SetForegroundColor(Color::Rgb {
-                    r: 255,
-                    g: 205,
-                    b: 85
-                }),
-                Print(prompt_label),
-                SetForegroundColor(Color::White),
-                Print(&self.prompt_input),
-                Print("█"),
-                Print(" ".repeat(w_usize.saturating_sub(input_str.chars().count() + 1))),
-                ResetColor
-            )?;
-        } else {
-            let msg = self.status_message.as_deref().unwrap_or("Ready.");
-            let status_line = format!(" ℹ {}", msg);
-            queue!(
-                writer,
-                MoveTo(0, prompt_y),
-                SetBackgroundColor(Color::Black),
-                SetForegroundColor(Color::White),
-                Print(format!(
-                    "{:<width$}",
-                    truncate_to_width(&status_line, w_usize),
-                    width = w_usize
-                )),
-                ResetColor
-            )?;
-        }
-        writer.flush()
-    }
-
-    fn draw_right_panel<W: Write>(
-        &self,
-        writer: &mut W,
-        start_x: usize,
-        start_y: usize,
-        height: usize,
-        w: usize,
-    ) -> io::Result<()> {
-        let bg_main = Color::Black; // Pure black
-        let fg_border = Color::White;
-        let fg_accent = Color::Rgb {
-            r: 30,
-            g: 215,
-            b: 96,
-        };
-        let fg_muted = Color::DarkGrey;
-        let fg_white = Color::White;
-
-        let mut lines = vec![format!("{:<width$}", "", width = w); height];
-
-        if height > 2 {
-            lines[1] = format!(" {:<width$}", "NOW PLAYING", width = w.saturating_sub(2));
-            lines[2] = format!(
-                " {:<width$}",
-                "─".repeat(w.saturating_sub(4)),
-                width = w.saturating_sub(2)
-            );
-        }
-
-        if height > 5 {
-            if let Some(ref t) = self.playback.item {
-                lines[4] = format!(
-                    "  {:<width$}",
-                    truncate_to_width(&t.name, w.saturating_sub(4)),
-                    width = w.saturating_sub(2)
-                );
-                lines[5] = format!(
-                    "  {:<width$}",
-                    truncate_to_width(&t.artists_str(), w.saturating_sub(4)),
-                    width = w.saturating_sub(2)
-                );
-            } else {
-                lines[4] = format!(" {:<width$}", "Silence...", width = w.saturating_sub(2));
-            }
-        }
-
-        if height > 9 {
-            lines[8] = format!(" {:<width$}", "UP NEXT", width = w.saturating_sub(2));
-            lines[9] = format!(
-                " {:<width$}",
-                "─".repeat(w.saturating_sub(4)),
-                width = w.saturating_sub(2)
-            );
-        }
-
-        let mut queue_y = 11;
-        for (i, track) in self.queue.iter().take(5).enumerate() {
-            if queue_y < height {
-                let track_str = format!("{}. {}", i + 1, track.name);
-                lines[queue_y] = format!(
-                    "  {:<width$}",
-                    truncate_to_width(&track_str, w.saturating_sub(4)),
-                    width = w.saturating_sub(2)
-                );
-                queue_y += 2;
-            }
-        }
-
-        // Impression en une passe : séparateur vertical + texte paddé
-        for (i, line) in lines.iter().enumerate() {
-            let mut fg = fg_white;
-            if i == 1 || i == 8 {
-                fg = fg_accent;
-            } else if i == 2 || i == 5 || i == 9 || (i == 4 && self.playback.item.is_none()) {
-                fg = fg_muted;
-            }
-
-            queue!(
-                writer,
-                MoveTo((start_x - 1) as u16, (start_y + i) as u16),
-                SetBackgroundColor(bg_main),
-                SetForegroundColor(fg_border),
-                Print("│"), // Séparateur
-                SetForegroundColor(fg),
-                Print(line) // Texte + Fond Noir
-            )?;
-        }
-        Ok(())
-    }
-
-    fn draw_search_tab<W: Write>(
-        &self,
-        writer: &mut W,
-        start_x: usize,
-        start_y: usize,
-        height: usize,
-        w: usize,
-    ) -> io::Result<()> {
-        let bg_main = Color::Black; // Pure black
-        let bg_sel = Color::White;
-        let fg_muted = Color::DarkGrey;
-        let fg_normal = Color::White;
-
-        queue!(
-            writer,
-            MoveTo(start_x as u16, start_y as u16),
-            SetBackgroundColor(bg_main),
-            SetForegroundColor(fg_muted)
-        )?;
-
-        let mut cat_line = format!("  Query: '{}' │ Filter: ", self.search_query);
-        for cat in SearchCategory::all() {
-            let is_sel = *cat == self.search_category;
-            if is_sel {
-                cat_line.push_str(&format!(" [▶ {}] ", cat.name()));
-            } else {
-                cat_line.push_str(&format!(" {} ", cat.name()));
-            }
-        }
-        cat_line.push_str(" │ [/] New Search │ [c] Switch Filter");
-        let padded_cat = if cat_line.width() < w {
-            format!("{}{}", cat_line, " ".repeat(w - cat_line.width()))
-        } else {
-            truncate_to_width(&cat_line, w)
-        };
-        queue!(writer, Print(padded_cat))?;
-
-        queue!(
-            writer,
-            MoveTo(start_x as u16, (start_y + 1) as u16),
-            SetBackgroundColor(Color::Black),
-            SetForegroundColor(fg_muted)
-        )?;
-        let table_header = match self.search_category {
-            SearchCategory::Tracks => {
-                "    # │ TRACK TITLE                                │ ARTIST                 │ ALBUM                  │ DURATION "
-            }
-            SearchCategory::Albums => {
-                "    # │ ALBUM NAME                                 │ ARTIST                 │ RELEASE DATE │ TRACKS    "
-            }
-            SearchCategory::Playlists => {
-                "    # │ PLAYLIST NAME                              │ OWNER                  │ TOTAL TRACKS            "
-            }
-            SearchCategory::Artists => {
-                "    # │ ARTIST NAME                                │ GENRES                 │ POPULARITY              "
-            }
-        };
-        let padded_th = if table_header.width() < w {
-            format!("{}{}", table_header, " ".repeat(w - table_header.width()))
-        } else {
-            truncate_to_width(table_header, w)
-        };
-        queue!(writer, Print(padded_th))?;
-
-        let list_y = start_y + 2;
-        let list_height = height.saturating_sub(2);
-        for y in 0..list_height {
-            let item_idx = self.scroll_offset + y;
-            let screen_y = (list_y + y) as u16;
-
-            let clear_str = format!("{:<width$}", "", width = w);
-            queue!(
-                writer,
-                MoveTo(start_x as u16, screen_y),
-                SetBackgroundColor(bg_main),
-                Print(&clear_str),
-                MoveTo(start_x as u16, screen_y)
-            )?;
-
-            match self.search_category {
-                SearchCategory::Tracks => {
-                    if let Some(track) = self.search_results.tracks.get(item_idx) {
-                        let is_sel = item_idx == self.selected_index;
-                        let bg = if is_sel { bg_sel } else { bg_main };
-                        let fg = if is_sel { Color::Black } else { fg_normal };
-                        let prefix = if is_sel { " ▶" } else { "  " };
-
-                        let line = format!(
-                            "{} {:>2} │ {:<42} │ {:<22} │ {:<22} │ {:>8}",
-                            prefix,
-                            item_idx + 1,
-                            truncate_to_width(&track.name, 42),
-                            truncate_to_width(&track.artists_str(), 22),
-                            truncate_to_width(&track.album_name, 22),
-                            track.formatted_duration()
-                        );
-                        let padded_line = if line.width() < w {
-                            format!("{}{}", line, " ".repeat(w - line.width()))
-                        } else {
-                            truncate_to_width(&line, w)
-                        };
-                        queue!(
-                            writer,
-                            SetBackgroundColor(bg),
-                            SetForegroundColor(fg),
-                            Print(padded_line),
-                            ResetColor
-                        )?;
-                    }
-                }
-                SearchCategory::Albums => {
-                    if let Some(album) = self.search_results.albums.get(item_idx) {
-                        let is_sel = item_idx == self.selected_index;
-                        let bg = if is_sel { bg_sel } else { bg_main };
-                        let fg = if is_sel { Color::Black } else { fg_normal };
-                        let prefix = if is_sel { " ▶" } else { "  " };
-
-                        let line = format!(
-                            "{} {:>2} │ {:<42} │ {:<22} │ {:<12} │ {:>6} tracks",
-                            prefix,
-                            item_idx + 1,
-                            truncate_to_width(&album.name, 42),
-                            truncate_to_width(&album.artists_str(), 22),
-                            truncate_to_width(&album.release_date, 12),
-                            album.total_tracks
-                        );
-                        let padded = if line.width() < w {
-                            format!("{}{}", line, " ".repeat(w - line.width()))
-                        } else {
-                            truncate_to_width(&line, w)
-                        };
-                        queue!(
-                            writer,
-                            SetBackgroundColor(bg),
-                            SetForegroundColor(fg),
-                            Print(padded),
-                            ResetColor
-                        )?;
-                    }
-                }
-                SearchCategory::Playlists => {
-                    if let Some(pl) = self.search_results.playlists.get(item_idx) {
-                        let is_sel = item_idx == self.selected_index;
-                        let bg = if is_sel { bg_sel } else { bg_main };
-                        let fg = if is_sel { Color::Black } else { fg_normal };
-                        let prefix = if is_sel { " ▶" } else { "  " };
-
-                        let line = format!(
-                            "{} {:>2} │ {:<42} │ {:<22} │ {:>6} tracks",
-                            prefix,
-                            item_idx + 1,
-                            truncate_to_width(&pl.name, 42),
-                            truncate_to_width(&pl.owner_name, 22),
-                            pl.total_tracks
-                        );
-                        let padded = if line.width() < w {
-                            format!("{}{}", line, " ".repeat(w - line.width()))
-                        } else {
-                            truncate_to_width(&line, w)
-                        };
-                        queue!(
-                            writer,
-                            SetBackgroundColor(bg),
-                            SetForegroundColor(fg),
-                            Print(padded),
-                            ResetColor
-                        )?;
-                    }
-                }
-                SearchCategory::Artists => {}
-            }
-        }
-        Ok(())
-    }
-
-    fn draw_queue_tab<W: Write>(
-        &self,
-        writer: &mut W,
-        start_x: usize,
-        start_y: usize,
-        height: usize,
-        w: usize,
-    ) -> io::Result<()> {
-        let bg_main = Color::Black; // Pure black
-        let bg_sel = Color::White;
-        let fg_muted = Color::DarkGrey;
-        let fg_normal = Color::White;
-
-        queue!(
-            writer,
-            MoveTo(start_x as u16, start_y as u16),
-            SetBackgroundColor(Color::Black),
-            SetForegroundColor(fg_muted)
-        )?;
-        let header = format!(
-            "  Play Queue ({} items) │ [Enter] Play Track │ [d] Remove",
-            self.queue.len()
-        );
-        queue!(writer, Print(format!("{:<width$}", header, width = w)))?;
-
-        for y in 0..height.saturating_sub(1) {
-            let item_idx = self.scroll_offset + y;
-            let clear_str = format!("{:<width$}", "", width = w);
-            queue!(
-                writer,
-                MoveTo(start_x as u16, (start_y + 1 + y) as u16),
-                SetBackgroundColor(bg_main),
-                Print(&clear_str),
-                MoveTo(start_x as u16, (start_y + 1 + y) as u16)
-            )?;
-
-            if let Some(track) = self.queue.get(item_idx) {
-                let is_sel = item_idx == self.selected_index;
-                let bg = if is_sel { bg_sel } else { bg_main };
-                let fg = if is_sel { Color::Black } else { fg_normal };
-                let prefix = if is_sel { " ▶" } else { "  " };
-
-                let line = format!(
-                    "{} {:>2} │ {:<40} │ {:<25} │ {}",
-                    prefix,
-                    item_idx + 1,
-                    truncate_to_width(&track.name, 40),
-                    truncate_to_width(&track.artists_str(), 25),
-                    track.formatted_duration()
-                );
-                queue!(
-                    writer,
-                    SetBackgroundColor(bg),
-                    SetForegroundColor(fg),
-                    Print(format!("{:<width$}", line, width = w)),
-                    ResetColor
-                )?;
-            }
-        }
-        Ok(())
-    }
-
-    fn draw_playlists_tab<W: Write>(
-        &self,
-        writer: &mut W,
-        start_x: usize,
-        start_y: usize,
-        height: usize,
-        w: usize,
-    ) -> io::Result<()> {
-        let bg_main = Color::Black; // Pure black
-        let bg_sel = Color::White;
-        let fg_muted = Color::DarkGrey;
-        let fg_normal = Color::White;
-
-        queue!(
-            writer,
-            MoveTo(start_x as u16, start_y as u16),
-            SetBackgroundColor(Color::Black),
-            SetForegroundColor(fg_muted)
-        )?;
-        let header = " Playlists & Featured Collections │ [Enter] Play Context │ [r] Reload";
-        queue!(writer, Print(format!("{:<width$}", header, width = w)))?;
-
-        for y in 0..height.saturating_sub(1) {
-            let item_idx = self.scroll_offset + y;
-            let clear_str = format!("{:<width$}", "", width = w);
-            queue!(
-                writer,
-                MoveTo(start_x as u16, (start_y + 1 + y) as u16),
-                SetBackgroundColor(bg_main),
-                Print(&clear_str),
-                MoveTo(start_x as u16, (start_y + 1 + y) as u16)
-            )?;
-
-            if let Some(pl) = self.playlists.get(item_idx) {
-                let is_sel = item_idx == self.selected_index;
-                let bg = if is_sel { bg_sel } else { bg_main };
-                let fg = if is_sel { Color::Black } else { fg_normal };
-                let prefix = if is_sel { " ▶" } else { "  " };
-
-                let line = format!(
-                    "{} {:>2} │ {:<35} │ By {:<20} │ {:>4} tracks │ {}",
-                    prefix,
-                    item_idx + 1,
-                    truncate_to_width(&pl.name, 35),
-                    truncate_to_width(&pl.owner_name, 20),
-                    pl.total_tracks,
-                    truncate_to_width(&pl.description, 30)
-                );
-                queue!(
-                    writer,
-                    SetBackgroundColor(bg),
-                    SetForegroundColor(fg),
-                    Print(format!("{:<width$}", line, width = w)),
-                    ResetColor
-                )?;
-            }
-        }
-        Ok(())
-    }
-
-    fn draw_devices_tab<W: Write>(
-        &self,
-        writer: &mut W,
-        start_x: usize,
-        start_y: usize,
-        height: usize,
-        w: usize,
-    ) -> io::Result<()> {
-        let bg_main = Color::Black; // Pure black
-        let bg_sel = Color::Green;
-        let fg_normal = Color::White;
-        queue!(
-            writer,
-            MoveTo(start_x as u16, start_y as u16),
-            SetBackgroundColor(Color::Black),
-            SetForegroundColor(Color::White)
-        )?;
-        let header =
-            "Available Spotify Connect Devices │ [Enter] Switch Active Device │ [r] Refresh";
-        queue!(writer, Print(format!("{:<width$}", header, width = w)))?;
-
-        for y in 0..height.saturating_sub(1) {
-            let item_idx = self.scroll_offset + y;
-            let screen_y = (start_y + 1 + y) as u16;
-
-            let clear_str = format!("{:<width$}", "", width = w);
-            queue!(
-                writer,
-                MoveTo(start_x as u16, screen_y),
-                SetBackgroundColor(bg_main),
-                Print(&clear_str),
-                MoveTo(start_x as u16, screen_y)
-            )?;
-
-            if let Some(dev) = self.devices.get(item_idx) {
-                let is_sel = item_idx == self.selected_index;
-                let bg = if is_sel { bg_sel } else { bg_main };
-                let fg = if is_sel { Color::Black } else { fg_normal };
-                let prefix = if is_sel { " ▶" } else { "  " };
-                let status_badge = if dev.is_active {
-                    " ACTIVE "
-                } else {
-                    " DISABLED "
-                };
-                let vol_str = dev
-                    .volume_percent
-                    .map(|v| format!("{}%", v))
-                    .unwrap_or_else(|| "N/A".to_string());
-
-                let line = format!(
-                    "{} {:>2} │ {:<30} │ Type: {:<12} │ Volume: {:<6} │ {}",
-                    prefix,
-                    item_idx + 1,
-                    truncate_to_width(&dev.name, 30),
-                    dev.device_type,
-                    vol_str,
-                    status_badge
-                );
-                queue!(
-                    writer,
-                    SetBackgroundColor(bg),
-                    SetForegroundColor(fg),
-                    Print(format!("{:<width$}", line, width = w)),
-                    ResetColor
-                )?;
-            }
-        }
-        Ok(())
-    }
-
-    fn draw_config_tab<W: Write>(
-        &self,
-        writer: &mut W,
-        start_x: usize,
-        start_y: usize,
-        height: usize,
-        w: usize,
-    ) -> io::Result<()> {
-        let bg_main = Color::Black; // Pure black
-        let bg_sel = Color::White;
-        let fg_muted = Color::DarkGrey;
-        let fg_cyan = Color::Rgb {
-            r: 90,
-            g: 200,
-            b: 250,
-        };
-        let fg_gold = Color::Rgb {
-            r: 255,
-            g: 205,
-            b: 85,
-        };
-
-        let creds = &self.client.credentials;
-        let token_masked = creds
-            .access_token
-            .as_ref()
-            .map(|t| {
-                format!(
-                    "{}...{}",
-                    &t[..6.min(t.len())],
-                    &t[t.len().saturating_sub(6)..]
-                )
-            })
-            .unwrap_or_else(|| "(Not Set)".to_string());
-        let id_val = creds.client_id.as_deref().unwrap_or("(Not Set)");
-        let secret_masked = if creds.client_secret.is_some() {
-            "********"
-        } else {
-            "(Not Set)"
-        };
-
-        let items = [
-            format!("1. Spotify OAuth Bearer Token      : {}", token_masked),
-            format!("2. Spotify Client ID                : {}", id_val),
-            format!("3. Spotify Client Secret            : {}", secret_masked),
-            "4. Request Client Credentials Token  : [Execute]".to_string(),
-        ];
-
-        for y in 0..height {
-            let clear_str = format!("{:<width$}", "", width = w);
-            queue!(
-                writer,
-                MoveTo(start_x as u16, (start_y + y) as u16),
-                SetBackgroundColor(bg_main),
-                Print(&clear_str),
-                MoveTo(start_x as u16, (start_y + y) as u16)
-            )?;
-
-            if y == 1 {
-                queue!(
-                    writer,
-                    SetForegroundColor(fg_gold),
-                    Print("   🔑 Spotify Authentication Configuration")
-                )?;
-            } else if (3..7).contains(&y) {
-                let idx = y - 3;
-                let is_sel = self.selected_index == idx;
-                let bg = if is_sel { bg_sel } else { bg_main };
-                let fg = if is_sel { Color::Black } else { fg_cyan };
-                let prefix = if is_sel { " ▶ " } else { "   " };
-                queue!(
-                    writer,
-                    SetBackgroundColor(bg),
-                    SetForegroundColor(fg),
-                    Print(format!(
-                        "{:<width$}",
-                        format!("{}{}", prefix, items[idx]),
-                        width = w
-                    )),
-                    ResetColor
-                )?;
-            } else if y == 9 {
-                queue!(
-                    writer,
-                    SetForegroundColor(fg_muted),
-                    Print(
-                        " Tip: Set env SPOTIFY_TOKEN or ~/.config/qwx/spotify.json to persist credentials."
-                    )
-                )?;
-            }
-        }
-        Ok(())
-    }
-
-    fn draw_bottom_player<W: Write>(
-        &self,
-        writer: &mut W,
-        start_y: usize,
-        sidebar_w: usize,
-        right_start_x: usize,
-        w: usize,
-    ) -> io::Result<()> {
-        let bg_main = Color::Black; // Pure black
-        let fg_border = Color::White;
-        let fg_muted = Color::DarkGrey;
-
-        queue!(
-            writer,
-            MoveTo(0, start_y as u16),
-            SetBackgroundColor(bg_main),
-            SetForegroundColor(fg_border),
-            Print("─".repeat(w))
-        )?;
-        queue!(writer, MoveTo(sidebar_w as u16, start_y as u16), Print("┴"))?;
-        queue!(
-            writer,
-            MoveTo((right_start_x - 1) as u16, start_y as u16),
-            Print("┴")
-        )?;
-
-        for y in 1..4 {
-            queue!(
-                writer,
-                MoveTo(0, (start_y + y) as u16),
-                SetBackgroundColor(bg_main),
-                Print(" ".repeat(w))
-            )?;
-        }
-
-        let (_title, _artist, duration, progress, pct) = if let Some(ref t) = self.playback.item {
-            let total = t.duration_ms.max(1);
-            let mut actual_prog = self.playback.progress_ms;
-            if self.playback.is_playing
-                && let Some(synced_at) = self.playback.last_synced_at
-            {
-                actual_prog = actual_prog.saturating_add(synced_at.elapsed().as_millis() as u64);
-            }
-            let prog = actual_prog.min(total);
-            (
-                t.name.clone(),
-                t.artists_str(),
-                total,
-                prog,
-                (prog * 100) / total,
-            )
-        } else {
-            ("No song".to_string(), "---".to_string(), 1, 0, 0)
-        };
-
-        let bar_len = w.saturating_sub(20);
-        let filled = ((pct as usize) * bar_len) / 100;
-        let empty = bar_len.saturating_sub(filled);
-        let start_bar = format!("{} [", format_duration_ms(progress));
-        let bar_str = format!("{}{}", "█".repeat(filled), " ".repeat(empty));
-        let end_bar = format!("] {}", format_duration_ms(duration));
-        queue!(
-            writer,
-            MoveTo(2, (start_y + 2) as u16),
-            SetForegroundColor(Color::White),
-            Print(start_bar),
-            SetForegroundColor(Color::Green),
-            Print(&bar_str),
-            SetForegroundColor(Color::White),
-            Print(end_bar),
-            SetForegroundColor(Color::Reset)
-        )?;
-
-        let shuffle = if self.playback.shuffle_state {
-            "ON"
-        } else {
-            "OFF"
-        };
-        let status = format!(
-            " Vol: {}% │ Shuffle: {} │ Rep: {:?} ",
-            self.playback.volume_percent, shuffle, self.playback.repeat_state
-        );
-        queue!(
-            writer,
-            MoveTo(1, (start_y + 4) as u16),
-            SetForegroundColor(fg_muted),
-            Print(&status),
-            ResetColor
-        )?;
-        Ok(())
-    }
-    /// Clean black local player (portrait + landscape).
     pub fn draw_local_player<W: Write>(
         &mut self,
         writer: &mut W,
         w: u16,
         h: u16,
     ) -> io::Result<()> {
+        self.poll_playback();
         queue!(
             writer,
             Clear(ClearType::All),
@@ -3547,140 +830,191 @@ impl MusicPlayer {
             SetForegroundColor(Color::White),
             Hide
         )?;
-
-        self.draw_tree(writer, w, h)?;
-        if let Some(status) = &self.status_message {
-            let text: String = status.chars().take(w.saturating_sub(1) as usize).collect();
-            queue!(
-                writer,
-                MoveTo(0, h.saturating_sub(1)),
-                SetForegroundColor(Color::White),
-                Print(text),
-                ResetColor
-            )?;
-        }
-        writer.flush()?;
-        Ok(())
-    }
-
-    /// Dessine le tree musical
-    fn draw_tree<W: Write>(&self, writer: &mut W, w: u16, h: u16) -> io::Result<()> {
-        let mut y = 0u16;
-        let max_y = h.saturating_sub(2);
-
-        if let Some(ref tree) = self.tree {
-            self.draw_node(writer, tree, 0, &mut y, max_y, w)?;
-        }
-
-        Ok(())
-    }
-
-    fn draw_node<W: Write>(
-        &self,
-        writer: &mut W,
-        node: &TreeNode,
-        depth: usize,
-        y: &mut u16,
-        max_y: u16,
-        w: u16,
-    ) -> io::Result<()> {
-        if *y >= max_y {
-            return Ok(());
-        }
-
-        // Filtre
-        if !self.tree_filter.is_empty()
-            && !node
-                .name
-                .to_lowercase()
-                .contains(&self.tree_filter.to_lowercase())
-            && !node.is_dir
-        {
-            return Ok(());
-        }
-
-        let indent = "  ".repeat(depth);
-        let prefix = if node.is_dir {
-            if node.expanded { "▼ " } else { "  " }
-        } else {
-            "  "
-        };
-
-        let is_selected = self.tree_cursor == *y as usize;
-        let cursor = if is_selected { "▶ " } else { "  " };
-        let playing = if self.current_path.as_ref() == Some(&node.path) {
-            "~ "
-        } else {
-            ""
-        };
-        let fav = if node.is_favorite { "* " } else { "" };
-
-        let count = if node.is_dir && node.track_count > 0 {
-            format!(" ({})", node.track_count)
-        } else {
-            String::new()
-        };
-
-        let color = if node.is_dir {
-            Color::Blue
-        } else {
-            Color::White
-        };
-
-        let line = format!(
-            "{}{}{}{}{}{}",
-            indent, cursor, prefix, fav, playing, node.name
-        );
-        let text = format!("{line}{count}");
-        let display = if UnicodeWidthStr::width(text.as_str()) > w as usize {
-            let limit = w.saturating_sub(3) as usize;
-            let mut used = 0;
-            let prefix: String = text
-                .chars()
-                .take_while(|character| {
-                    used += character.width().unwrap_or(0);
-                    used <= limit
-                })
-                .collect();
-            format!("{}{}", prefix, ".".repeat((w as usize).min(3)))
-        } else {
-            text
-        };
-
-        if is_selected {
-            queue!(
-                writer,
-                MoveTo(0, *y),
-                SetBackgroundColor(Color::White),
-                SetForegroundColor(Color::Black),
-                Print(&display),
-                ResetColor
-            )?;
-        } else {
-            queue!(
-                writer,
-                MoveTo(0, *y),
-                SetForegroundColor(color),
-                Print(&display),
-                ResetColor
-            )?;
-        }
-
-        *y += 1;
-
-        if node.is_dir && node.expanded {
-            for child in &node.children {
-                self.draw_node(writer, child, depth + 1, y, max_y, w)?;
+        let show_filter = self.editing_filter || !self.filter.is_empty();
+        let tree_height = h.saturating_sub(if show_filter { 3 } else { 2 }) as usize;
+        if tree_height > 0 {
+            if self.cursor < self.scroll {
+                self.scroll = self.cursor;
+            } else if self.cursor >= self.scroll + tree_height {
+                self.scroll = self.cursor + 1 - tree_height;
+            }
+            for (row, node) in self
+                .visible
+                .iter()
+                .skip(self.scroll)
+                .take(tree_height)
+                .enumerate()
+            {
+                let index = self.scroll + row;
+                let marker = if node.is_dir {
+                    if node.expanded {
+                        "[D] ▼ "
+                    } else {
+                        "[D] ▸ "
+                    }
+                } else {
+                    "[F] "
+                };
+                let cursor = if index == self.cursor { "▶ " } else { "  " };
+                let playing = if self.current_path.as_ref() == Some(&node.path) {
+                    "~ "
+                } else {
+                    ""
+                };
+                let favorite = if node.is_favorite { "* " } else { "" };
+                let count = if node.is_dir && node.track_count > 0 {
+                    format!(" ({})", node.track_count)
+                } else {
+                    String::new()
+                };
+                let text = format!(
+                    "{}{}{}{}{}{}{}",
+                    "  ".repeat(node.depth),
+                    cursor,
+                    marker,
+                    favorite,
+                    playing,
+                    node.name,
+                    count
+                );
+                let text = truncate_width(&text, w as usize);
+                queue!(writer, MoveTo(0, row as u16))?;
+                if index == self.cursor {
+                    queue!(
+                        writer,
+                        SetBackgroundColor(Color::White),
+                        SetForegroundColor(Color::Black)
+                    )?;
+                } else {
+                    queue!(
+                        writer,
+                        SetBackgroundColor(Color::Black),
+                        SetForegroundColor(if node.is_dir {
+                            Color::Blue
+                        } else {
+                            Color::White
+                        })
+                    )?;
+                }
+                queue!(writer, Print(text), ResetColor)?;
+            }
+            if self.visible.is_empty() && (self.tree.is_some() || self.view == PlayerView::Playlist)
+            {
+                let message = if self.view == PlayerView::Playlist && self.filter.is_empty() {
+                    if self.playlist_path.is_some() {
+                        "Playlist empty. Add tracks with a in the tree."
+                    } else {
+                        "Playlist unavailable or loading."
+                    }
+                } else {
+                    "No matches."
+                };
+                queue!(
+                    writer,
+                    MoveTo(0, 0),
+                    SetForegroundColor(Color::White),
+                    Print(truncate_width(message, w as usize)),
+                    ResetColor
+                )?;
             }
         }
-
-        Ok(())
+        if show_filter && h >= 3 {
+            let prefix = "Filter: ";
+            let remaining = (w as usize).saturating_sub(prefix.len());
+            let mut used = 0;
+            let tail: String = self
+                .filter
+                .chars()
+                .rev()
+                .take_while(|character| {
+                    used += character.width().unwrap_or(0);
+                    used <= remaining
+                })
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            let prompt = format!("{prefix}{tail}");
+            queue!(
+                writer,
+                MoveTo(0, h - 3),
+                SetBackgroundColor(Color::Black),
+                SetForegroundColor(Color::White),
+                Print(truncate_width(&prompt, w as usize)),
+                ResetColor
+            )?;
+        }
+        if h >= 2 {
+            let view = if self.view == PlayerView::Tree {
+                "Tree"
+            } else {
+                "Playlist"
+            };
+            let heading = format!(
+                "{view} | Repeat: {} | t: switch | r: repeat",
+                self.repeat.label()
+            );
+            queue!(
+                writer,
+                MoveTo(0, h - 2),
+                SetBackgroundColor(Color::Black),
+                SetForegroundColor(Color::White),
+                Print(truncate_width(&heading, w as usize)),
+                ResetColor
+            )?;
+        }
+        if h > 0
+            && let Some(status) = &self.status_message
+        {
+            queue!(
+                writer,
+                MoveTo(0, h - 1),
+                SetBackgroundColor(Color::Black),
+                SetForegroundColor(Color::White),
+                Print(truncate_width(status, w as usize)),
+                ResetColor
+            )?;
+        }
+        writer.flush()
     }
+}
+
+fn truncate_width(text: &str, width: usize) -> String {
+    if UnicodeWidthStr::width(text) <= width {
+        return text.to_string();
+    }
+    let dots = width.min(3);
+    let limit = width - dots;
+    let mut used = 0;
+    let prefix: String = text
+        .chars()
+        .take_while(|character| {
+            used += character.width().unwrap_or(0);
+            used <= limit
+        })
+        .collect();
+    format!("{prefix}{}", ".".repeat(dots))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn wait_for_status(player: &mut MusicPlayer, prefix: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            player.poll_playback();
+            if player
+                .status_message
+                .as_deref()
+                .is_some_and(|message| message.starts_with(prefix))
+            {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("missing status {prefix}: {:?}", player.status_message);
+    }
 
     #[test]
     fn scan_indexes_nested_music_and_refreshes_cache() {
@@ -3693,7 +1027,6 @@ mod tests {
         fs::write(album.join("song.FLAC"), b"").unwrap();
         fs::write(album.join("notes.txt"), b"").unwrap();
         let cancelled = AtomicBool::new(false);
-
         let library = MusicPlayer::scan_library(&music, Some(&cache), &cancelled).unwrap();
         assert_eq!(library.tracks.len(), 2);
         assert_eq!(library.tree.track_count, 2);
@@ -3706,7 +1039,6 @@ mod tests {
         assert_eq!(artist.track_count, 1);
         assert_eq!(artist.children[0].children[0].name, "song.FLAC");
         assert!(library.notice.is_none());
-
         let cached = MusicPlayer::scan_library(&music, Some(&cache), &cancelled).unwrap();
         assert_eq!(cached.tree.track_count, 2);
         fs::write(album.join("new.ogg"), b"").unwrap();
@@ -3753,189 +1085,264 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("bad.flac");
         fs::write(&path, b"not audio").unwrap();
-        let (mut sink, mut stream, mut current) = (None, None, None);
-        assert!(play_local_flac(&path, &mut sink, &mut stream, &mut current).is_err());
-        assert!(sink.is_none());
-        assert!(stream.is_none());
-        assert!(current.is_none());
+        let mut player = MusicPlayer::new();
+        player.play_path(&path);
+        wait_for_status(&mut player, "Local play error:");
+        assert!(player.current_path.is_none());
     }
 
     #[test]
-    fn playback_action_discards_pending_spotify_refresh() {
+    fn playlist_is_persistent_and_switches_views() {
         let temp = tempfile::tempdir().unwrap();
-        fs::write(temp.path().join("bad.flac"), b"not audio").unwrap();
-        let library =
-            MusicPlayer::scan_library(temp.path(), None, &AtomicBool::new(false)).unwrap();
-        let track = library.tracks[0].clone();
+        let music = temp.path().join("music");
+        fs::create_dir(&music).unwrap();
+        let track = music.join("song.flac");
+        fs::write(&track, b"").unwrap();
+        let path = temp.path().join("config").join("playlist.json");
         let mut player = MusicPlayer::new();
-        let original_volume = player.playback.volume_percent;
-        let (sender, receiver) = mpsc::channel();
-        let mut stale = PlaybackState::default();
-        stale.volume_percent = 1;
-        sender.send(Ok(Some(stale))).unwrap();
-        player.playback_refresh = Some(receiver);
+        player.apply_playlist(Ok((path.clone(), load_playlist(&path).unwrap())));
+        player.apply_library(
+            MusicPlayer::scan_library(&music, None, &AtomicBool::new(false)).unwrap(),
+        );
+        player.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        player.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert_eq!(load_playlist(&path).unwrap(), vec![track.clone()]);
 
-        player.play_track(&track);
-        player.poll_playback_refresh();
-        assert_eq!(player.playback.volume_percent, original_volume);
+        let mut reopened = MusicPlayer::new();
+        reopened.apply_playlist(Ok((path.clone(), load_playlist(&path).unwrap())));
+        reopened.handle_key(KeyCode::Char('t'), KeyModifiers::NONE);
+        assert_eq!(reopened.visible[0].path, track);
+        reopened.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        assert!(load_playlist(&path).unwrap().is_empty());
+        assert!(reopened.visible.is_empty());
+        reopened.handle_key(KeyCode::Char('t'), KeyModifiers::NONE);
+        assert!(reopened.view == PlayerView::Tree);
+    }
+
+    #[test]
+    fn playlist_load_and_save_errors_do_not_discard_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let music = temp.path().join("music");
+        fs::create_dir(&music).unwrap();
+        fs::write(music.join("song.flac"), b"").unwrap();
+        let path = temp.path().join("playlist.json");
+        fs::write(&path, "invalid json").unwrap();
+        let mut player = MusicPlayer::new();
+        player.apply_playlist(load_playlist(&path).map(|tracks| (path.clone(), tracks)));
+        player.apply_library(
+            MusicPlayer::scan_library(&music, None, &AtomicBool::new(false)).unwrap(),
+        );
+        player.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        player.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
         assert!(
             player
                 .status_message
                 .as_deref()
                 .unwrap()
-                .starts_with("Local play error:")
+                .starts_with("Playlist load failed:")
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "invalid json");
+
+        player.apply_playlist(Ok((
+            temp.path().join("missing-file").join("playlist.json"),
+            Vec::new(),
+        )));
+        fs::write(temp.path().join("missing-file"), b"not a directory").unwrap();
+        player.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert!(
+            player
+                .status_message
+                .as_deref()
+                .unwrap()
+                .starts_with("Playlist save failed:")
+        );
+        assert!(player.playlist.is_empty());
+    }
+
+    #[test]
+    fn repeat_cycles_through_track_and_playlist() {
+        let mut player = MusicPlayer::new();
+        for expected in [Repeat::Track, Repeat::Playlist, Repeat::Off] {
+            player.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+            assert_eq!(player.repeat, expected);
+        }
+    }
+
+    #[test]
+    fn tree_visibly_distinguishes_files_and_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("album")).unwrap();
+        fs::write(temp.path().join("song.flac"), b"").unwrap();
+        let mut player = MusicPlayer::new();
+        player.apply_library(
+            MusicPlayer::scan_library(temp.path(), None, &AtomicBool::new(false)).unwrap(),
+        );
+        let mut output = Vec::new();
+        player.draw_local_player(&mut output, 80, 20).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("[D] ▸ album"));
+        assert!(output.contains("[F] song.flac"));
+    }
+
+    #[test]
+    fn tree_playback_order_follows_expansion_and_filter() {
+        let temp = tempfile::tempdir().unwrap();
+        let album = temp.path().join("album");
+        fs::create_dir(&album).unwrap();
+        let first = album.join("first.flac");
+        let second = album.join("second.flac");
+        let top = temp.path().join("top.flac");
+        for path in [&first, &second, &top] {
+            fs::write(path, b"").unwrap();
+        }
+        let mut player = MusicPlayer::new();
+        player.apply_library(
+            MusicPlayer::scan_library(temp.path(), None, &AtomicBool::new(false)).unwrap(),
+        );
+        assert_eq!(player.visible_tracks(), vec![top.clone()]);
+        player.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        player.handle_key(KeyCode::Char('l'), KeyModifiers::NONE);
+        assert_eq!(
+            player.visible_tracks(),
+            vec![first.clone(), second.clone(), top.clone()]
+        );
+        player.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        for c in "second".chars() {
+            player.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert_eq!(player.visible_tracks(), vec![second]);
+        player.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(
+            player.visible_tracks(),
+            vec![first, album.join("second.flac"), top]
         );
     }
 
     #[test]
-    fn local_playback_controls_work_without_a_spotify_device() {
+    fn tree_changes_update_active_playback_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first.flac");
+        let second = temp.path().join("second.flac");
+        fs::write(&first, b"").unwrap();
+        fs::write(&second, b"").unwrap();
         let mut player = MusicPlayer::new();
-        let (sink, _output) = rodio::Sink::new_idle();
-        sink.pause();
-        player.current_sink = Some(Arc::new(std::sync::Mutex::new(sink)));
+        player.apply_library(
+            MusicPlayer::scan_library(temp.path(), None, &AtomicBool::new(false)).unwrap(),
+        );
+        let (sender, receiver) = mpsc::channel();
+        player.playback = Some(Playback {
+            sender,
+            state: Arc::new(std::sync::Mutex::new(playback::State::default())),
+            thread: std::thread::spawn(|| {}),
+        });
 
-        player.toggle_play_pause();
-        assert!(player.playback.is_playing);
-        player.handle_key(KeyCode::Char(' '), KeyModifiers::NONE);
-        assert!(!player.playback.is_playing);
+        player.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        assert!(
+            matches!(receiver.recv().unwrap(), PlaybackCommand::Tree(paths) if paths == vec![first.clone(), second.clone()])
+        );
+        for c in "second".chars() {
+            player.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        let mut last = None;
+        while let Ok(command) = receiver.try_recv() {
+            last = Some(command);
+        }
+        assert!(matches!(last, Some(PlaybackCommand::Tree(paths)) if paths == vec![second]));
     }
 
     #[test]
-    fn local_next_skips_spotify_entries() {
+    fn filter_updates_tree_navigation_and_rendering_live() {
         let temp = tempfile::tempdir().unwrap();
-        fs::write(temp.path().join("first.flac"), b"not audio").unwrap();
-        fs::write(temp.path().join("second.flac"), b"not audio").unwrap();
+        let album = temp.path().join("Artist").join("Album");
+        fs::create_dir_all(&album).unwrap();
+        fs::write(album.join("Blue.flac"), b"invalid").unwrap();
+        fs::write(album.join("Red.flac"), b"invalid").unwrap();
         let library =
             MusicPlayer::scan_library(temp.path(), None, &AtomicBool::new(false)).unwrap();
         let mut player = MusicPlayer::new();
         player.apply_library(library);
-        player.current_path = Some(temp.path().join("first.flac"));
-        let mut spotify = player.queue[0].clone();
-        spotify.source = AudioSource::Spotify {
-            uri: "spotify:track:test".to_string(),
-            id: "test".to_string(),
-        };
-        player.queue.insert(1, spotify);
-
-        player.next_track();
-        assert!(
-            player
-                .status_message
-                .as_deref()
-                .unwrap()
-                .starts_with("Local play error:")
-        );
-    }
-
-    #[test]
-    fn test_format_duration_ms() {
-        assert_eq!(format_duration_ms(0), "00:00");
-        assert_eq!(format_duration_ms(65000), "01:05");
-        assert_eq!(format_duration_ms(245000), "04:05");
-    }
-
-    #[test]
-    fn test_repeat_mode_cycle() {
-        let mode = RepeatMode::Off;
-        let mode = mode.next();
-        assert_eq!(mode, RepeatMode::Context);
-        let mode = mode.next();
-        assert_eq!(mode, RepeatMode::Track);
-        let mode = mode.next();
-        assert_eq!(mode, RepeatMode::Off);
-    }
-
-    #[test]
-    fn test_player_tab_navigation() {
-        let mut player = MusicPlayer::new();
-        assert_eq!(player.active_tab, PlayerTab::Queue);
-        player.next_tab();
-        assert_eq!(player.active_tab, PlayerTab::Search);
-    }
-
-    #[test]
-    fn test_spotify_credentials_init() {
-        let creds = SpotifyCredentials::default();
-        let _ = creds.is_configured();
-    }
-
-    #[test]
-    fn test_spotify_credentials_serialization_and_deserialization() {
-        let json_data = serde_json::json!({
-            "client_id": "test_id",
-            "client_secret": "test_secret",
-            "access_token": "test_token",
-            "refresh_token": "test_refresh"
-        });
-
-        let creds: SpotifyCredentials = serde_json::from_value(json_data).unwrap();
-        assert_eq!(creds.client_id.as_deref(), Some("test_id"));
-        assert_eq!(creds.client_secret.as_deref(), Some("test_secret"));
-        assert_eq!(creds.access_token.as_deref(), Some("test_token"));
-        assert_eq!(creds.refresh_token.as_deref(), Some("test_refresh"));
-        assert!(creds.is_configured());
-    }
-
-    #[test]
-    fn test_handle_key_playback_and_volume() {
-        let mut player = MusicPlayer::new();
-        let initial_vol = player.playback.volume_percent;
-        // Test volume up with '+'
-        player.handle_key(KeyCode::Char('+'), KeyModifiers::NONE);
-        assert_eq!(player.playback.volume_percent, (initial_vol + 5).min(100));
-
-        // Test volume down with '-'
-        player.handle_key(KeyCode::Char('-'), KeyModifiers::NONE);
-        assert_eq!(player.playback.volume_percent, initial_vol);
-
-        // Test repeat cycle with 'r'
-        assert_eq!(player.playback.repeat_state, RepeatMode::Off);
-        player.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
-        assert_eq!(player.playback.repeat_state, RepeatMode::Context);
-
-        // Test shuffle toggle with 'z'
-        assert!(!player.playback.shuffle_state);
-        player.handle_key(KeyCode::Char('z'), KeyModifiers::NONE);
-        assert!(player.playback.shuffle_state);
-    }
-
-    #[test]
-    fn test_handle_key_prompts_and_exit() {
-        let mut player = MusicPlayer::new();
-        // Quit with 'q' returns false
-        assert!(!player.handle_key(KeyCode::Char('q'), KeyModifiers::NONE));
-        // Quit with Esc returns false
-        assert!(!player.handle_key(KeyCode::Esc, KeyModifiers::NONE));
-
-        // Trigger search prompt with '/'
+        assert_eq!(player.visible.len(), 2);
         player.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
-        assert_eq!(player.active_prompt, PlayerPrompt::Search);
-        assert_eq!(player.active_tab, PlayerTab::Search);
-
-        // Type search query
-        player.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
-        player.handle_key(KeyCode::Char('o'), KeyModifiers::NONE);
-        player.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
-        player.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
-        assert_eq!(player.prompt_input, "rock");
-
-        // Backspace
-        player.handle_key(KeyCode::Backspace, KeyModifiers::NONE);
-        assert_eq!(player.prompt_input, "roc");
-
-        // Cancel prompt with Esc (returns true, doesn't quit player)
-        let stay = player.handle_key(KeyCode::Esc, KeyModifiers::NONE);
-        assert!(stay);
-        assert_eq!(player.active_prompt, PlayerPrompt::None);
-        assert_eq!(player.prompt_input, "");
-
-        // Seek prompt
-        player.handle_key(KeyCode::Char('f'), KeyModifiers::NONE);
-        assert_eq!(player.active_prompt, PlayerPrompt::SeekInput);
-        player.handle_key(KeyCode::Char('4'), KeyModifiers::NONE);
-        player.handle_key(KeyCode::Char('5'), KeyModifiers::NONE);
+        player.handle_key(KeyCode::Char('b'), KeyModifiers::NONE);
+        player.handle_key(KeyCode::Char('l'), KeyModifiers::NONE);
+        assert_eq!(player.filter, "bl");
+        assert!(player.visible.iter().any(|node| node.name == "Blue.flac"));
+        assert!(!player.visible.iter().any(|node| node.name == "Red.flac"));
+        assert_eq!(player.visible.last().unwrap().depth, 3);
+        let mut output = Vec::new();
+        player.draw_local_player(&mut output, 80, 20).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("Filter: bl"));
+        assert!(output.contains("\u{1b}[38;5;15mFilter: bl"));
+        assert!(output.contains("Blue.flac"));
+        assert!(!output.contains("Red.flac"));
         player.handle_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(player.active_prompt, PlayerPrompt::None);
-        assert_eq!(player.playback.progress_ms, 45000);
+        player.handle_key(KeyCode::End, KeyModifiers::NONE);
+        assert_eq!(player.visible[player.cursor].name, "Blue.flac");
+        player.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        wait_for_status(&mut player, "Local play error:");
+        player.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(player.filter.is_empty());
+        assert_eq!(player.visible.len(), 2);
+    }
+
+    #[test]
+    fn filter_matches_directory_names_and_backspace_updates_results() {
+        let temp = tempfile::tempdir().unwrap();
+        let album = temp.path().join("Jazz");
+        fs::create_dir_all(&album).unwrap();
+        fs::write(album.join("Song.flac"), b"").unwrap();
+        let library =
+            MusicPlayer::scan_library(temp.path(), None, &AtomicBool::new(false)).unwrap();
+        let mut player = MusicPlayer::new();
+        player.apply_library(library);
+        player.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        for c in "jazzx".chars() {
+            player.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert!(player.visible.is_empty());
+        player.handle_key(KeyCode::Backspace, KeyModifiers::NONE);
+        assert!(player.visible.iter().any(|node| node.name == "Song.flac"));
+        player.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(player.filter.is_empty());
+        assert!(!player.editing_filter);
+    }
+
+    #[test]
+    fn filtering_handles_loading_and_scrolls_to_the_selection() {
+        let temp = tempfile::tempdir().unwrap();
+        for index in 0..10 {
+            fs::write(temp.path().join(format!("song-{index}.flac")), b"").unwrap();
+        }
+        let library =
+            MusicPlayer::scan_library(temp.path(), None, &AtomicBool::new(false)).unwrap();
+        let mut player = MusicPlayer::new();
+        player.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        for c in "song".chars() {
+            player.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        player.apply_library(library);
+        assert_eq!(player.visible.len(), 11);
+        player.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        player.handle_key(KeyCode::End, KeyModifiers::NONE);
+        let mut output = Vec::new();
+        player.draw_local_player(&mut output, 40, 5).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("song-9.flac"));
+        assert!(!output.contains("song-0.flac"));
+        assert_eq!(player.visible[player.cursor].name, "song-9.flac");
+    }
+
+    #[test]
+    fn long_filter_shows_the_latest_text_in_white() {
+        let mut player = MusicPlayer::new();
+        player.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        for c in "123456789".chars() {
+            player.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        let mut output = Vec::new();
+        player.draw_local_player(&mut output, 12, 4).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("\u{1b}[38;5;15mFilter: 6789"));
     }
 }

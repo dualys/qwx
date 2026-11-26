@@ -80,7 +80,7 @@ commands.
 | **Menu**      | Contextual command execution and file system quick actions (`!mkdir`, `!touch`, etc.).                  |
 | **Search**    | In-buffer text pattern search and match navigation.                                                     |
 | **WebSearch** | Unified Search Hub, DevSecOps intelligence, package lookup, Git workflow, and CVE vulnerability audit.  |
-| **Player**    | Integrated Spotify music player & TUI controller (search, queue, playlists, playback, devices).         |
+| **Player**    | Integrated local music player and library browser.                                                       |
 | **Zen**       | Isolates and centers the active panel while hiding the grid. Other panels run in the background.        |
 | **Rescue**    | Emergency mode. Freezes complex rendering and background parsing to save connection under high latency. |
 | **Broadcast** | Transforms terminal into a native collaborative pair-programming space with real-time cursor sync.      |
@@ -116,27 +116,31 @@ From within the Search Hub, you can execute Git actions directly on search resul
   `cve-security-report.md` or `search-report.md`).
 - **Open in Browser** (`Alt + o` / `Ctrl + o`): Open the selected result URL in your default system web browser.
 
-## SPOTIFY MUSIC PLAYER TUI
+## LOCAL MUSIC PLAYER
 
-`qwx` includes a fully embedded, real-time terminal music player for Spotify (`Player` mode via `Alt + p`, `Alt + m`, or
-`:player`).
+Open the local music player with `Alt + p` or `:player`.
 
 The editor appears before the player starts indexing local music in the
 background. The player displays its loading state and remains closable while
 indexing. It scans the configured Music directory, or the home directory if
 none is configured; scan and cache errors are shown in the player.
 
-### Key Capabilities
+Press `/` to filter the tree as you type. Matching tracks and directories are
+shown with their parent directories, including matches inside collapsed folders.
+Press Enter to navigate the filtered results or Esc to clear the filter.
+WAV, FLAC, MP3 and OGG playback is supported. AAC and M4A files are listed,
+but may not be playable with the current decoder; failures are shown in the player.
 
-- **Now Playing Display**: Real-time progress bar, track title, artists, album, device badge, volume, repeat and shuffle
-  indicators.
-- **Search & Queue Integration**: Instant search across tracks, albums, and playlists with category cycling (`c`),
-  direct playback (`Enter`), or queuing tracks (`a`).
-- **Device Management**: View and switch active Spotify Connect devices seamlessly.
-- **Playlists & Saved Songs**: Browse user playlists and liked songs directly in terminal.
-- **Authentication**: Zero-friction setup via environment variables (`SPOTIFY_TOKEN` / `SPOTIFY_ACCESS_TOKEN`,
-  `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`), persistent config (`~/.config/qwx/spotify.json`), or interactive in-TUI
-  configuration.
+Directories and files are marked `[D]` and `[F]`. Press `a` on a file to add
+it to the playlist, and `t` to switch between the tree and playlist. The
+playlist is saved in `~/.config/qwx/playlist.json` (or the configured XDG
+config directory); `d` removes the selected playlist entry. Playback continues
+when the player is closed. Tracks advance automatically through the visible
+tree (respecting open folders and filters) or through the playlist. If the
+playing tree track becomes hidden, playback stops after it finishes unless
+track repeat is enabled.
+`r` cycles repeat off, current track, and playlist; playlist repeat applies
+when playback starts from the playlist view.
 
 ## KEYBOARD SHORTCUTS
 
@@ -198,7 +202,7 @@ text manipulations without entering insert mode.
 | `Alt + d`                       | **Dmenu / Menu Mode**  | Opens the command menu (dmenu) for rapid execution.                               |
 | `Alt + /`                       | **Buffer Search Mode** | Opens the in-buffer search prompt to find patterns within the active node.        |
 | `s`, `Alt + s, w`               | **Search Hub Mode**    | Opens the global Search Hub & DevSecOps security audit suite.                     |
-| `Alt + p`, `Alt + m`, `:player` | **Player Mode**        | Opens the integrated Spotify Music Player TUI.                                    |
+| `Alt + p`, `:player`            | **Player Mode**        | Opens the local music player.                                                      |
 | `q`                             | **Quit**               | Terminates the qwx environment.                                                   |
 
 ### Search Hub & DevSecOps Mode Shortcuts
@@ -221,7 +225,7 @@ When inside the Search Hub (`WebSearch` mode):
 | `Alt + e` / `Ctrl + e`      | **Export Report**       | Exports results or security audit findings as a Markdown report file.                                  |
 | `Alt + o` / `Ctrl + o`      | **Open in Browser**     | Opens the URL of the selected item in the default web browser.                                         |
 
-### Spotify Music Player Mode Shortcuts
+### Music Player Mode Shortcuts
 
 When inside the Music Player (`Player` mode):
 
@@ -231,19 +235,13 @@ When inside the Music Player (`Player` mode):
 | `n` / `>`                | **Next Track**        | Skips to the next track.                                                                          |
 | `p` / `<`                | **Previous Track**    | Returns to the previous track.                                                                    |
 | `+` / `-`                | **Volume Up / Down**  | Increases or decreases volume by 5%.                                                              |
-| `Left` / `Right`         | **Seek Position**     | Rewinds or fast-forwards track position by 5 seconds (in Now Playing tab).                        |
-| `f`                      | **Seek Prompt**       | Opens prompt to seek to a specific position in seconds.                                           |
-| `v`                      | **Set Volume**        | Opens prompt to set volume percentage directly (0-100%).                                          |
-| `z` / `s`                | **Toggle Shuffle**    | Toggles playback shuffle mode ON / OFF.                                                           |
-| `r`                      | **Cycle Repeat**      | Cycles repeat mode (Off -> Context -> Track).                                                     |
-| `Shift + r` / `F5`       | **Refresh State**     | Refreshes current playback state, devices, and playlists from Spotify.                            |
-| `Tab` / `Shift + Tab`    | **Cycle Tabs**        | Navigates across tabs (Now Playing, Search, Queue, Playlists, Devices, Config).                   |
-| `1` .. `6`               | **Direct Tab Select** | Jumps directly to tab (1: Now Playing, 2: Search, 3: Queue, 4: Playlists, 5: Devices, 6: Config). |
-| `j` / `k`, `Down` / `Up` | **Navigate List**     | Moves cursor up or down in current list.                                                          |
-| `Enter`                  | **Play / Select**     | Plays selected track/album/playlist or activates selected item/action.                            |
-| `/`                      | **Search Prompt**     | Opens interactive search prompt in Search tab.                                                    |
-| `c`                      | **Cycle Category**    | In Search tab, switches search category (Tracks, Albums, Playlists).                              |
-| `a`                      | **Add to Queue**      | Adds the selected track from search results into the player queue.                                |
-| `d` / `Delete`           | **Remove from Queue** | Removes the selected track from the queue tab.                                                    |
-| `t`                      | **Set Token**         | Opens prompt to update Spotify Access Token.                                                      |
-| `Esc` / `q`              | **Exit Player**       | Closes the player and returns to Normal mode.                                                     |
+| `t`                      | **Switch View**       | Switches between the music tree and the playlist.                                                |
+| `a` / `d`                | **Playlist**          | Adds the selected tree file / removes the selected playlist entry.                               |
+| `r`                      | **Repeat**            | Cycles repeat off, current track, and playlist.                                                   |
+| `j` / `k`, `Down` / `Up` | **Navigate Tree**     | Moves the selection through visible nodes.                                                        |
+| `h` / `l`, `Left` / `Right` | **Close / Open**   | Collapses or expands the selected directory when not filtering.                                  |
+| `x`                      | **Collapse All**      | Collapses the tree when not filtering.                                                           |
+| `Enter`                  | **Play / Open**       | Plays the selected file or toggles a directory when not filtering.                                |
+| `/`                      | **Filter**            | Starts live filtering; Enter keeps the filter and Esc clears it.                                  |
+| `Esc`                    | **Clear / Exit**      | Clears the filter, or closes the player when no filter is active.                                 |
+| `q`                      | **Exit Player**       | Closes the player and returns to Normal mode.                                                     |

@@ -3,10 +3,9 @@ use clap_complete::{Shell, generate};
 use git2::build::RepoBuilder;
 use git2::{FetchOptions, RemoteCallbacks};
 use indicatif::{ProgressBar, ProgressStyle};
-use inquire::{Confirm, Text};
+use inquire::Confirm;
 use qwx::QwxConfig;
 use qwx::editor::{Mode, Qwx};
-use qwx::player::{SpotifyClient, SpotifyCredentials};
 use std::env::{current_dir, set_current_dir};
 use std::fs::{File, create_dir_all, read_to_string};
 use std::io::Write;
@@ -21,13 +20,15 @@ fn cli() -> Command {
         .author(env!("CARGO_PKG_AUTHORS"))
         .version(env!("CARGO_PKG_VERSION"))
         .long_about(HELP_CONTENT)
-        .subcommand(Command::new("open").about("Open a directory or file").arg(
-            Arg::new("path")
-                .help("Path to open")
-                .required(true)
-                .action(ArgAction::Set)
-                .value_parser(value_parser!(PathBuf)),
-        ))
+        .subcommand(
+            Command::new("open").about("Open a directory or file").arg(
+                Arg::new("path")
+                    .help("Path to open")
+                    .required(true)
+                    .action(ArgAction::Set)
+                    .value_parser(value_parser!(PathBuf)),
+            ),
+        )
         .subcommand(
             Command::new("gen")
                 .about("Gen auto completion for shell")
@@ -37,9 +38,11 @@ fn cli() -> Command {
                         .value_parser(["bash", "zsh", "fish", "powershell", "elvish"]),
                 ),
         )
-        .subcommand(Command::new("config").about("Manage the qwx.toml file").subcommands([
-            Command::new("edit").about("Open the config file"),
-        ]))
+        .subcommand(
+            Command::new("config")
+                .about("Manage the qwx.toml file")
+                .subcommands([Command::new("edit").about("Open the config file")]),
+        )
         .subcommand(
             Command::new("clone")
                 .about("Get a git repository in a directory and open it in qwx")
@@ -54,126 +57,15 @@ fn cli() -> Command {
                         .required(true)
                         .action(ArgAction::Set)
                         .value_parser(value_parser!(PathBuf)),
-                ).arg(Arg::new("depth").long("depth").value_parser(value_parser!(i32)).required(false).help("Number of commits to fetch")),
-        )
-        .subcommand(
-            Command::new("spotify")
-                .visible_alias("spotify-config")
-                .about("Configure Spotify credentials interactively or update access token")
-                .subcommand(
-                    Command::new("update-token")
-                        .visible_alias("update-token")
-                        .about("Automatically request and update Spotify access token using Client ID & Secret"),
+                )
+                .arg(
+                    Arg::new("depth")
+                        .long("depth")
+                        .value_parser(value_parser!(i32))
+                        .required(false)
+                        .help("Number of commits to fetch"),
                 ),
         )
-}
-
-fn configure_spotify() -> io::Result<()> {
-    let existing = SpotifyCredentials::load_from_config();
-
-    println!("╔════════════════════════════════════════════════════════════════╗");
-    println!("║              QWX - Spotify Web API Configuration               ║");
-    println!("╚════════════════════════════════════════════════════════════════╝");
-    println!("Press Enter to keep the current value or leave empty.\n");
-
-    let mut client_id_prompt = Text::new("Spotify Client ID:")
-        .with_help_message("Client ID from the Spotify Developer Dashboard");
-    if let Some(ref val) = existing.client_id {
-        client_id_prompt = client_id_prompt.with_default(val);
-    }
-    let client_id = client_id_prompt
-        .prompt()
-        .map_err(|e| io::Error::other(e.to_string()))?;
-
-    let mut client_secret_prompt = Text::new("Spotify Client Secret:")
-        .with_help_message("Client Secret from the Spotify Developer Dashboard");
-    if let Some(ref val) = existing.client_secret {
-        client_secret_prompt = client_secret_prompt.with_default(val);
-    }
-    let client_secret = client_secret_prompt
-        .prompt()
-        .map_err(|e| io::Error::other(e.to_string()))?;
-
-    let mut access_token_prompt = Text::new("Spotify Access Token (Bearer):")
-        .with_help_message("OAuth Bearer access token (optional)");
-    if let Some(ref val) = existing.access_token {
-        access_token_prompt = access_token_prompt.with_default(val);
-    }
-    let access_token = access_token_prompt
-        .prompt()
-        .map_err(|e| io::Error::other(e.to_string()))?;
-
-    let mut refresh_token_prompt =
-        Text::new("Spotify Refresh Token:").with_help_message("OAuth refresh token (optional)");
-    if let Some(ref val) = existing.refresh_token {
-        refresh_token_prompt = refresh_token_prompt.with_default(val);
-    }
-    let refresh_token = refresh_token_prompt
-        .prompt()
-        .map_err(|e| io::Error::other(e.to_string()))?;
-
-    let to_option = |s: String| -> Option<String> {
-        let trimmed = s.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    };
-
-    let raw_json = serde_json::json!({
-        "client_id": to_option(client_id),
-        "client_secret": to_option(client_secret),
-        "access_token": to_option(access_token),
-        "refresh_token": to_option(refresh_token),
-    });
-
-    let credentials: SpotifyCredentials = serde_json::from_value(raw_json).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("Deserialization error: {e}"),
-        )
-    })?;
-
-    credentials.save_to_config()?;
-
-    if let Some(path) = SpotifyCredentials::config_file_path() {
-        println!(
-            "\n✓ Spotify configuration successfully saved to {}",
-            path.display()
-        );
-    } else {
-        println!("\n✓ Spotify configuration successfully saved.");
-    }
-
-    Ok(())
-}
-
-fn update_spotify_token() -> io::Result<()> {
-    println!("Requesting new Spotify Access Token using configured Client ID & Secret...");
-    let mut client = SpotifyClient::new();
-    match client.request_client_credentials_token() {
-        Ok(token) => {
-            println!("\n✓ Spotify Access Token successfully retrieved and saved to configuration!");
-            let preview = if token.len() > 16 {
-                format!("{}...", &token[..16])
-            } else {
-                token
-            };
-            println!("  Token: {}", preview);
-            if let Some(path) = SpotifyCredentials::config_file_path() {
-                println!("  Saved to: {}", path.display());
-            }
-            Ok(())
-        }
-        Err(e) => {
-            eprintln!("\n✗ Failed to update Spotify token: {}", e);
-            eprintln!(
-                "  Tip: Make sure Client ID & Client Secret are configured via `qwx spotify` or environment variables."
-            );
-            Err(io::Error::other(e))
-        }
-    }
 }
 
 fn clone_and_open(sub: &ArgMatches, c: &QwxConfig) -> io::Result<()> {
@@ -274,13 +166,6 @@ fn main() -> io::Result<()> {
                 Ok(())
             }
             Some(("clone", sub)) => clone_and_open(sub, &c),
-            Some(("spotify", sub)) | Some(("spotify-config", sub)) => {
-                if let Some(("update-token", _)) = sub.subcommand() {
-                    update_spotify_token()
-                } else {
-                    configure_spotify()
-                }
-            }
             None => {
                 if let Some(p) = matches.get_one::<PathBuf>("path") {
                     Qwx::new(p.canonicalize()?.as_path(), Mode::Normal, &c)
