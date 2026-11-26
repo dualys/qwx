@@ -42,6 +42,7 @@ use tree_sitter::{Query, StreamingIterator};
 use tree_sitter_highlight::HighlightConfiguration;
 use unicode_width::UnicodeWidthChar;
 
+mod completion;
 pub mod theme;
 
 /// Represents the initial state of a `PaneState` in the application.
@@ -844,6 +845,7 @@ impl QwxPanel for Qwx {
                 "keyword.function",
                 "keyword.return",
                 "keyword.operator",
+                "keyword.control",
                 "function",
                 "function.macro",
                 "function.method",
@@ -851,6 +853,7 @@ impl QwxPanel for Qwx {
                 "string",
                 "string_literal",
                 "character",
+                "string.escape",
                 "number",
                 "integer",
                 "float",
@@ -861,6 +864,7 @@ impl QwxPanel for Qwx {
                 "type",
                 "primitive_type",
                 "type.builtin",
+                "type.deprecated",
                 "operator",
                 "punctuation.bracket",
                 "punctuation.delimiter",
@@ -875,6 +879,7 @@ impl QwxPanel for Qwx {
                 "constant.character.escape",
                 "namespace",
                 "keyword.directive",
+                "constant.language",
                 "punctuation.special",
             ];
             if let Some(config) = detect_language(&node.ext, &node.name, &theme_keys) {
@@ -1855,6 +1860,13 @@ impl Qwx {
                 .as_key_event()
                 .expect("failed to parse key event");
 
+            if e.modifiers == KeyModifiers::NONE
+                && !self.keymap.contains_key(&(e.modifiers, e.code))
+                && self.editor.move_line_boundary(e.code)
+            {
+                self.follow();
+                continue;
+            }
             if let Some(action) = self.keymap.get(&(e.modifiers, e.code)) {
                 match action {
                     Action::SearchPrev | Action::SearchNext => {}
@@ -2323,117 +2335,340 @@ impl Qwx {
         }
     }
 
+    fn auto_completion_request(&self) -> Option<completion::Request> {
+        let path = self.editor.file_path.as_ref()?;
+        if !completion::supports_auto_completion(path) {
+            return None;
+        }
+        let line = self.editor.cursor_line;
+        let col = self.editor.cursor_col;
+        let cursor = self.editor.rope.line_to_char(line) + col;
+        (completion::prefix_start(&self.editor.rope, line, cursor) < cursor).then(|| {
+            completion::Request {
+                path: path.clone(),
+                rope: self.editor.rope.clone(),
+                line,
+                col,
+            }
+        })
+    }
+
     fn handle_editor<W: Write>(&mut self, w: &mut W) {
         self.reset(w).expect("failed to reset");
+        let mut pending: Option<(completion::Task, Rope, PathBuf, usize, usize, bool)> = None;
+        let mut scheduled: Option<(completion::Request, std::time::Instant)> = None;
+        let mut items: Vec<completion::Item> = Vec::new();
+        let mut selected = 0usize;
         loop {
-            self.draw_editor(w).expect("failed to draw");
-            self.sync_node_content();
-            match read().expect("msg") {
-                Event::Key(key) => match (key.modifiers, key.code) {
-                    (KeyModifiers::NONE, KeyCode::Esc) => {
-                        if self.editor.selection.is_some() {
-                            self.editor.selection = None;
-                        } else {
-                            self.mode = Mode::Normal;
-                        }
-                        self.reset(w).expect("failed to reset");
-                        break;
+            if scheduled
+                .as_ref()
+                .is_some_and(|(_, due)| std::time::Instant::now() >= *due)
+            {
+                if let Some((request, _)) = scheduled.take() {
+                    let snapshot = request.rope.clone();
+                    let path = request.path.clone();
+                    let line = request.line;
+                    let col = request.col;
+                    match completion::start(request) {
+                        Ok(task) => pending = Some((task, snapshot, path, line, col, false)),
+                        Err(error) => self.status_message = Some(format!("Completion: {error}")),
                     }
-                    (KeyModifiers::NONE, KeyCode::Enter) => {
-                        self.editor.insert_char('\n');
-                        self.sync_node_content();
-                        self.follow();
-                    }
-                    (KeyModifiers::NONE, KeyCode::Delete) => {
-                        self.editor.delete();
-                        self.sync_node_content();
-                    }
-                    (KeyModifiers::CONTROL, KeyCode::Char('s')) => {
-                        if self.editor.file_path.is_some() {
-                            if !self.save_active(None) {
-                                continue;
-                            }
-                        } else {
-                            self.mode = Mode::Menu;
-                            self.menu_input = ":w ".to_string();
-                            break;
-                        }
-                        // Scelle le Noun et alloue dans jinshu
-                        let focus_idx = self.focus as usize;
-                        if let Some(view) = self.views.get(focus_idx) {
-                            let node_id = view.active_node_id;
-                            if let Some(node) = self.nodes.iter_mut().find(|n| n.id == node_id) {
-                                let bytes = self.editor.rope.to_string().into_bytes();
-                                node.noun = noun::Noun::of(&bytes);
-                                // Alloue un LBA
-                                if let Some(lba) = self.engine.allocator.allocate_node() {
-                                    node.lba = Some(lba);
+                }
+            }
+            if let Some((task, snapshot, path, line, col, manual)) = &pending {
+                match task.receiver.try_recv() {
+                    Ok(result) => {
+                        if self.editor.file_path.as_ref() == Some(path)
+                            && self.editor.rope == *snapshot
+                            && self.editor.cursor_line == *line
+                            && self.editor.cursor_col == *col
+                        {
+                            match result {
+                                Ok(found) if !found.is_empty() => {
+                                    items = found;
+                                    selected = 0;
+                                    self.status_message = None;
+                                }
+                                Ok(_) if *manual => {
+                                    self.status_message =
+                                        Some("No completion suggestions.".to_string())
+                                }
+                                Ok(_) => {}
+                                Err(error) => {
+                                    self.status_message = Some(format!("Completion: {error}"))
                                 }
                             }
                         }
+                        pending = None;
                     }
-                    (KeyModifiers::CONTROL, KeyCode::Char('z')) => {
-                        self.editor.undo();
-                        self.sync_node_content();
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        pending = None;
+                        self.status_message =
+                            Some("Completion worker stopped unexpectedly.".to_string());
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                }
+            }
+            self.draw_editor(w).expect("failed to draw");
+            if !items.is_empty() {
+                use crossterm::cursor::{RestorePosition, SavePosition};
+                let count = items
+                    .len()
+                    .min(6)
+                    .min(self.height.saturating_sub(1) as usize);
+                let first = selected.saturating_sub(count.saturating_sub(1));
+                let width = self.width.min(60);
+                let left = self.width.saturating_sub(width) / 2;
+                let top = self.height.saturating_sub(1 + count as u16) / 2;
+                queue!(w, SavePosition).expect("failed to save cursor");
+                for (row, item) in items.iter().skip(first).take(count).enumerate() {
+                    let mut used = 0usize;
+                    let label: String = item
+                        .label
+                        .chars()
+                        .filter(|ch| !ch.is_control())
+                        .take_while(|ch| {
+                            let char_width = ch.width().unwrap_or(0);
+                            if used + char_width > width as usize {
+                                false
+                            } else {
+                                used += char_width;
+                                true
+                            }
+                        })
+                        .collect();
+                    queue!(
+                        w,
+                        MoveTo(left, top + row as u16),
+                        SetBackgroundColor(if first + row == selected {
+                            Color::White
+                        } else {
+                            Color::DarkGrey
+                        }),
+                        SetForegroundColor(if first + row == selected {
+                            Color::Black
+                        } else {
+                            Color::White
+                        }),
+                        Print(format!(
+                            "{label}{}",
+                            " ".repeat((width as usize).saturating_sub(used))
+                        )),
+                        ResetColor
+                    )
+                    .expect("failed to draw completion");
+                }
+                queue!(w, RestorePosition).expect("failed to restore cursor");
+                w.flush().expect("failed to flush completion");
+            }
+            self.sync_node_content();
+            let poll_timeout = scheduled
+                .as_ref()
+                .map(|(_, due)| due.saturating_duration_since(std::time::Instant::now()))
+                .unwrap_or(std::time::Duration::from_millis(100))
+                .min(std::time::Duration::from_millis(100));
+            if (pending.is_some() || scheduled.is_some())
+                && !poll(poll_timeout).expect("failed to poll terminal")
+            {
+                continue;
+            }
+            match read().expect("msg") {
+                Event::Key(key) => {
+                    let mut text_changed = false;
+                    if !items.is_empty() {
+                        match (key.modifiers, key.code) {
+                            (KeyModifiers::NONE, KeyCode::Down | KeyCode::Tab) => {
+                                selected = (selected + 1) % items.len();
+                                continue;
+                            }
+                            (KeyModifiers::NONE, KeyCode::Up | KeyCode::BackTab)
+                            | (KeyModifiers::SHIFT, KeyCode::BackTab) => {
+                                selected = selected.checked_sub(1).unwrap_or(items.len() - 1);
+                                continue;
+                            }
+                            (KeyModifiers::NONE, KeyCode::Enter) => {
+                                self.editor.apply_completion(&items[selected]);
+                                self.sync_node_content();
+                                self.follow();
+                                items.clear();
+                                continue;
+                            }
+                            (KeyModifiers::NONE, KeyCode::Esc) => {
+                                items.clear();
+                                continue;
+                            }
+                            _ => items.clear(),
+                        }
+                    }
+                    if pending.take().is_some()
+                        && self.status_message.as_deref() == Some("Loading completion...")
+                    {
+                        self.status_message = None;
+                    }
+                    scheduled = None;
+                    if key.modifiers == KeyModifiers::NONE
+                        && self.editor.move_line_boundary(key.code)
+                    {
                         self.follow();
+                        continue;
                     }
-                    (KeyModifiers::CONTROL, KeyCode::Char('y')) => {
-                        self.editor.redo();
-                        self.sync_node_content();
-                        self.follow();
-                    }
-                    (KeyModifiers::CONTROL, KeyCode::Char('v')) => {
-                        self.editor.paste();
-                        self.sync_node_content();
-                        self.follow();
-                    }
-                    (KeyModifiers::CONTROL, KeyCode::Char('k')) => {
-                        // 1. On réinitialise la sélection pour s'assurer de ne cibler que la ligne courante
-                        self.editor.selection = None;
+                    match (key.modifiers, key.code) {
+                        (KeyModifiers::CONTROL, KeyCode::Char(' ' | '\0')) => {
+                            if let Some(path) = self.editor.file_path.clone() {
+                                let snapshot = self.editor.rope.clone();
+                                let line = self.editor.cursor_line;
+                                let col = self.editor.cursor_col;
+                                let request = completion::Request {
+                                    path: path.clone(),
+                                    rope: snapshot.clone(),
+                                    line,
+                                    col,
+                                };
+                                match completion::start(request) {
+                                    Ok(task) => {
+                                        pending = Some((task, snapshot, path, line, col, true));
+                                        self.status_message =
+                                            Some("Loading completion...".to_string());
+                                    }
+                                    Err(error) => {
+                                        self.status_message = Some(format!("Completion: {error}"))
+                                    }
+                                }
+                            } else {
+                                self.status_message =
+                                    Some("Completion requires a saved file.".to_string());
+                            }
+                        }
+                        (KeyModifiers::NONE, KeyCode::Esc) => {
+                            if self.editor.selection.is_some() {
+                                self.editor.selection = None;
+                            } else {
+                                self.mode = Mode::Normal;
+                            }
+                            self.reset(w).expect("failed to reset");
+                            break;
+                        }
+                        (KeyModifiers::NONE, KeyCode::Enter) => {
+                            self.editor.insert_char('\n');
+                            self.sync_node_content();
+                            self.follow();
+                            text_changed = true;
+                        }
+                        (KeyModifiers::NONE, KeyCode::Delete) => {
+                            self.editor.delete();
+                            self.sync_node_content();
+                            text_changed = true;
+                        }
+                        (KeyModifiers::CONTROL, KeyCode::Char('s')) => {
+                            if self.editor.file_path.is_some() {
+                                if !self.save_active(None) {
+                                    continue;
+                                }
+                            } else {
+                                self.mode = Mode::Menu;
+                                self.menu_input = ":w ".to_string();
+                                break;
+                            }
+                            // Scelle le Noun et alloue dans jinshu
+                            let focus_idx = self.focus as usize;
+                            if let Some(view) = self.views.get(focus_idx) {
+                                let node_id = view.active_node_id;
+                                if let Some(node) = self.nodes.iter_mut().find(|n| n.id == node_id)
+                                {
+                                    let bytes = self.editor.rope.to_string().into_bytes();
+                                    node.noun = noun::Noun::of(&bytes);
+                                    // Alloue un LBA
+                                    if let Some(lba) = self.engine.allocator.allocate_node() {
+                                        node.lba = Some(lba);
+                                    }
+                                }
+                            }
+                        }
+                        (KeyModifiers::CONTROL, KeyCode::Char('z')) => {
+                            self.editor.undo();
+                            self.sync_node_content();
+                            self.follow();
+                            text_changed = true;
+                        }
+                        (KeyModifiers::CONTROL, KeyCode::Char('y')) => {
+                            self.editor.redo();
+                            self.sync_node_content();
+                            self.follow();
+                            text_changed = true;
+                        }
+                        (KeyModifiers::CONTROL, KeyCode::Char('v')) => {
+                            self.editor.paste();
+                            self.sync_node_content();
+                            self.follow();
+                            text_changed = true;
+                        }
+                        (KeyModifiers::CONTROL, KeyCode::Char('k')) => {
+                            // 1. On réinitialise la sélection pour s'assurer de ne cibler que la ligne courante
+                            self.editor.selection = None;
 
-                        // 2. On sélectionne la ligne entière grâce à ta fonction
-                        self.editor.select_line();
+                            // 2. On sélectionne la ligne entière grâce à ta fonction
+                            self.editor.select_line();
 
-                        // 3. On supprime la sélection d'un bloc.
-                        // Cela ne créera qu'UNE SEULE entrée dans l'historique d'annulation
-                        // et mettra à jour Tree-sitter 1 seule fois.
-                        self.editor.delete_selection();
-
-                        // 4. On synchronise le contenu et la caméra (le curseur se remet à la colonne 0 tout seul)
-                        self.sync_node_content();
-                        self.follow();
-                    }
-                    (KeyModifiers::NONE, KeyCode::Backspace) => {
-                        self.editor.backspace();
-                        self.sync_node_content();
-                        self.follow();
-                    }
-                    (KeyModifiers::ALT, KeyCode::Char('x')) => {
-                        self.editor.select_line();
-                        self.sync_node_content();
-                        self.follow();
-                    }
-                    (KeyModifiers::ALT, KeyCode::Char('d')) => {
-                        if self.editor.selection.is_some() {
+                            // 3. On supprime la sélection d'un bloc.
+                            // Cela ne créera qu'UNE SEULE entrée dans l'historique d'annulation
+                            // et mettra à jour Tree-sitter 1 seule fois.
                             self.editor.delete_selection();
+
+                            // 4. On synchronise le contenu et la caméra (le curseur se remet à la colonne 0 tout seul)
+                            self.sync_node_content();
+                            self.follow();
+                            text_changed = true;
                         }
-                        self.sync_node_content();
-                        self.follow();
-                    }
-                    (KeyModifiers::NONE, KeyCode::Tab) => {
-                        for _ in 0..4 {
-                            self.editor.insert_char(' ');
+                        (KeyModifiers::NONE, KeyCode::Backspace) => {
+                            self.editor.backspace();
+                            self.sync_node_content();
+                            self.follow();
+                            text_changed = true;
                         }
-                        self.sync_node_content();
+                        (KeyModifiers::ALT, KeyCode::Char('x')) => {
+                            self.editor.select_line();
+                            self.sync_node_content();
+                            self.follow();
+                        }
+                        (KeyModifiers::ALT, KeyCode::Char('d')) => {
+                            if self.editor.selection.is_some() {
+                                self.editor.delete_selection();
+                                text_changed = true;
+                            }
+                            self.sync_node_content();
+                            self.follow();
+                        }
+                        (KeyModifiers::NONE, KeyCode::Tab) => {
+                            for _ in 0..4 {
+                                self.editor.insert_char(' ');
+                            }
+                            self.sync_node_content();
+                            text_changed = true;
+                        }
+                        (m, KeyCode::Char(c)) if m.is_empty() || m == KeyModifiers::SHIFT => {
+                            self.editor.insert_char(c);
+                            self.sync_node_content();
+                            self.follow();
+                            text_changed = true;
+                        }
+                        _ => {}
                     }
-                    (m, KeyCode::Char(c)) if m.is_empty() || m == KeyModifiers::SHIFT => {
-                        self.editor.insert_char(c);
-                        self.sync_node_content();
-                        self.follow();
+                    if text_changed {
+                        items.clear();
+                        scheduled = self.auto_completion_request().map(|request| {
+                            (
+                                request,
+                                std::time::Instant::now() + std::time::Duration::from_millis(300),
+                            )
+                        });
                     }
-                    _ => {}
-                },
+                }
                 Event::Paste(x) => {
+                    pending = None;
+                    items.clear();
+                    if self.status_message.as_deref() == Some("Loading completion...") {
+                        self.status_message = None;
+                    }
                     self.editor.record_undo();
                     for ch in x.chars() {
                         self.editor.insert_char_raw(ch);
@@ -2441,6 +2676,12 @@ impl Qwx {
                     self.editor.update_syntax_tree();
                     self.sync_node_content();
                     self.follow();
+                    scheduled = self.auto_completion_request().map(|request| {
+                        (
+                            request,
+                            std::time::Instant::now() + std::time::Duration::from_millis(300),
+                        )
+                    });
                 }
                 Event::Resize(cols, rows) => {
                     self.width = cols;
@@ -3872,7 +4113,12 @@ fn detect_language(
             theme_keys,
         ),
         #[cfg(feature = "tree-sitter-d")]
-        "d" => create_config("d", Language::from(tree_sitter_d::LANGUAGE), "", theme_keys),
+        "d" | "di" => create_config(
+            "d",
+            Language::from(tree_sitter_d::LANGUAGE),
+            include_str!("queries/d.scm"),
+            theme_keys,
+        ),
         #[cfg(feature = "tree-sitter-dart")]
         "dart" => create_config(
             "dart",
@@ -4166,6 +4412,44 @@ pub struct Ji {
 }
 
 impl Ji {
+    fn move_line_boundary(&mut self, key: KeyCode) -> bool {
+        self.cursor_col = match key {
+            KeyCode::Home => 0,
+            KeyCode::End => {
+                let line = self.safe_line(self.cursor_line);
+                let mut end = line.len_chars();
+                while end > 0 && matches!(line.char(end - 1), '\r' | '\n') {
+                    end -= 1;
+                }
+                end
+            }
+            _ => return false,
+        };
+        true
+    }
+
+    fn apply_completion(&mut self, item: &completion::Item) {
+        let main = &item.edits[0];
+        let mut cursor = main.start + main.text.chars().count();
+        for edit in item.edits.iter().skip(1) {
+            if edit.end <= main.start {
+                cursor = cursor - (edit.end - edit.start) + edit.text.chars().count();
+            }
+        }
+        self.record_undo();
+        let mut edits = item.edits.clone();
+        edits.sort_by_key(|edit| std::cmp::Reverse(edit.start));
+        for edit in edits {
+            self.rope.remove(edit.start..edit.end);
+            self.rope.insert(edit.start, &edit.text);
+        }
+        self.cursor_line = self.rope.char_to_line(cursor);
+        self.cursor_col = cursor - self.rope.line_to_char(self.cursor_line);
+        self.selection = None;
+        self.syntax_tree = None;
+        self.update_syntax_tree();
+    }
+
     fn content_hash(&self) -> blake3::Hash {
         let mut hasher = blake3::Hasher::new();
         for chunk in self.rope.chunks() {
@@ -4450,6 +4734,7 @@ impl Ji {
             "keyword.function",
             "keyword.return",
             "keyword.operator",
+            "keyword.control",
             "function",
             "function.macro",
             "function.method",
@@ -4457,6 +4742,7 @@ impl Ji {
             "string",
             "string_literal",
             "character",
+            "string.escape",
             "number",
             "integer",
             "float",
@@ -4467,6 +4753,7 @@ impl Ji {
             "type",
             "primitive_type",
             "type.builtin",
+            "type.deprecated",
             "operator",
             "punctuation.bracket",
             "punctuation.delimiter",
@@ -4481,6 +4768,7 @@ impl Ji {
             "constant.character.escape",
             "namespace",
             "keyword.directive",
+            "constant.language",
             "punctuation.special",
         ];
 
@@ -4769,6 +5057,78 @@ impl Ji {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "tree-sitter-d")]
+    #[test]
+    fn d_files_get_syntax_highlighting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sample.d");
+        std::fs::write(
+            &path,
+            "module sample;\n// comment\nint main() { auto label = \"text\"; return 42; }\n",
+        )
+        .unwrap();
+        let editor = Ji::open(path).unwrap();
+        let spans = editor.get_colored_spans();
+        assert!(
+            spans
+                .iter()
+                .any(|(text, color)| { text == "return" && *color == theme::KEYWORDS })
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|(text, color)| { text == "\"text\"" && *color == theme::STRINGS })
+        );
+        assert!(spans.iter().any(|(text, color)| {
+            text == "42" && *color == theme::get_color_for_capture("number")
+        }));
+    }
+
+    #[test]
+    fn line_boundary_keys_respect_unicode_and_line_endings() {
+        let mut editor = Ji::default();
+        editor.rope = Rope::from_str("é😀\r\n\nlast");
+        for (line, expected) in [(0, 2), (1, 0), (2, 4)] {
+            editor.cursor_line = line;
+            assert!(editor.move_line_boundary(KeyCode::End));
+            assert_eq!(editor.cursor_col, expected);
+            assert!(editor.move_line_boundary(KeyCode::Home));
+            assert_eq!(editor.cursor_col, 0);
+        }
+        assert!(!editor.move_line_boundary(KeyCode::Left));
+    }
+
+    #[test]
+    fn completion_applies_additional_edits_as_one_undo() {
+        let mut editor = Ji::default();
+        editor.rope = Rope::from_str("fn main() {\n    ab\n}\n");
+        editor.cursor_line = 1;
+        editor.cursor_col = 6;
+        let item = completion::Item {
+            label: "abc".to_string(),
+            edits: vec![
+                completion::Edit {
+                    start: 16,
+                    end: 18,
+                    text: "abc".to_string(),
+                },
+                completion::Edit {
+                    start: 0,
+                    end: 0,
+                    text: "use foo;\n".to_string(),
+                },
+            ],
+        };
+        editor.apply_completion(&item);
+        assert_eq!(
+            editor.rope.to_string(),
+            "use foo;\nfn main() {\n    abc\n}\n"
+        );
+        assert_eq!((editor.cursor_line, editor.cursor_col), (2, 7));
+        editor.undo();
+        assert_eq!(editor.rope.to_string(), "fn main() {\n    ab\n}\n");
+    }
 
     fn command_editor(path: &Path) -> Qwx {
         let config = QwxConfig::default();

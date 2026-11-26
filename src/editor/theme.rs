@@ -1,6 +1,10 @@
 use crossterm::style::Color;
 
-pub const FG_DEFAULT: Color = Color::White;
+pub const FG_DEFAULT: Color = Color::Rgb {
+    r: 212,
+    g: 212,
+    b: 212,
+};
 pub const BG_BLACK: Color = Color::Rgb { r: 0, g: 0, b: 0 };
 
 // --- PALETTE DU FINDER ---
@@ -11,58 +15,54 @@ pub const FINDER_DIR_COLOR: Color = Color::Blue;
 pub const FINDER_FILE_COLOR: Color = Color::White;
 pub const FINDER_ACTIVE_SELECT: Color = Color::White;
 pub const CONSTANTS: Color = Color::Rgb {
-    r: 230,
-    g: 190,
-    b: 100,
+    r: 79,
+    g: 193,
+    b: 255,
 };
 
-// Un Or doux, très lisible
+// VS Code Dark+ syntax palette
 pub const NAMESPACES: Color = Color::Rgb {
-    r: 150,
-    g: 180,
-    b: 200,
-}; // Un gris-bleu pour les modules
+    r: 78,
+    g: 201,
+    b: 176,
+};
 pub const DIRECTIVES: Color = Color::Rgb {
-    r: 200,
-    g: 120,
-    b: 180,
-}; // Un rose/magenta pastel
-// Ton fameux "Bleu Noir" pour les commentaires (discret mais lisible)
+    r: 197,
+    g: 134,
+    b: 192,
+};
 pub const COMMENTS: Color = Color::Rgb {
-    r: 50,
-    g: 70,
-    b: 100,
+    r: 106,
+    g: 153,
+    b: 85,
 };
 
-// Un bleu clair/cyan très pur pour les types
 pub const TYPES: Color = Color::Rgb {
-    r: 100,
-    g: 170,
-    b: 255,
+    r: 78,
+    g: 201,
+    b: 176,
 };
 
-// Un bleu électrique pastel pour les fonctions, qui reste dans ton thème
 pub const FUNCTIONS: Color = Color::Rgb {
-    r: 80,
-    g: 200,
-    b: 240,
+    r: 220,
+    g: 220,
+    b: 170,
 };
 
-// Pour contraster un peu sans casser l'ambiance froide :
 pub const KEYWORDS: Color = Color::Rgb {
-    r: 180,
-    g: 150,
-    b: 255,
-}; // Violet doux
+    r: 86,
+    g: 156,
+    b: 214,
+};
 pub const STRINGS: Color = Color::Rgb {
-    r: 120,
-    g: 200,
-    b: 160,
-}; // Vert d'eau/Menthe
-const NUMBERS: Color = Color::Rgb {
-    r: 240,
-    g: 160,
+    r: 206,
+    g: 145,
     b: 120,
+};
+const NUMBERS: Color = Color::Rgb {
+    r: 181,
+    g: 206,
+    b: 168,
 };
 
 pub const UI_BORDER_INACTIVE: Color = Color::Rgb { r: 0, g: 0, b: 0 };
@@ -87,20 +87,23 @@ pub const UI_DMENU_FG: Color = Color::Rgb { r: 0, g: 0, b: 0 };
 
 pub fn get_color_for_capture(capture_name: &str) -> Color {
     match capture_name {
-        "constant" | "constant.builtin" | "constant.character.escape" => CONSTANTS,
+        "constant" | "constant.builtin" | "constant.language" | "constant.character.escape" => {
+            CONSTANTS
+        }
 
         "namespace" => NAMESPACES,
 
         "attribute" | "keyword.directive" => DIRECTIVES,
         "comment" | "line_comment" | "block_comment" => COMMENTS,
 
-        "type" | "primitive_type" | "type.builtin" => TYPES,
+        "type" | "primitive_type" | "type.builtin" | "type.deprecated" => TYPES,
 
         "function" | "function.macro" | "function.method" | "method" => FUNCTIONS,
 
-        "keyword" | "keyword.function" | "keyword.return" | "keyword.operator" => KEYWORDS,
+        "keyword" | "keyword.function" | "keyword.return" | "keyword.operator"
+        | "keyword.control" => KEYWORDS,
 
-        "string" | "string_literal" | "character" => STRINGS,
+        "string" | "string_literal" | "string.special" | "string.escape" | "character" => STRINGS,
 
         "number" | "integer" | "float" | "boolean" => NUMBERS,
 

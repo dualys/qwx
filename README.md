@@ -148,6 +148,19 @@ when playback starts from the playlist view.
 
 The Editor Mode is dedicated to direct text insertion and modification.
 
+For Rust, C, C++ and D files, matching suggestions appear automatically after
+you pause while typing in Editor mode. `Ctrl + Space` still requests them
+immediately. Navigate with Up/Down or Tab, accept with Enter, or dismiss with
+Esc. The local language server starts in the background:
+install `rust-analyzer`, `clangd`, or `serve-d` respectively. C/C++ projects
+benefit from a `compile_commands.json`. Snippet and command-based suggestions
+are not supported and are omitted; completion item resolution and edits in
+other files are not supported. Headers ending in `.h` are treated as C.
+Install `serve-d` for D completion. D syntax highlighting is enabled by
+default; the editor syntax colors use a VS Code Dark+ inspired palette. The
+server receives the current unsaved buffer; Rust project analysis may run
+project build tooling.
+
 Files must contain valid UTF-8. Saving preserves existing line endings and
 refuses to overwrite a file whose contents changed since it was opened or last
 saved. Writes use a temporary file in the same directory and replace the
@@ -169,6 +182,7 @@ Use `:q!` to discard unsaved changes.
 | `Ctrl + k`  | **Delete to End**    | Deletes all characters from the current cursor position to the end of the line.                          |
 | `Alt + x`   | **Select Line**      | Selects the entire line currently under the cursor.                                                      |
 | `Alt + d`   | **Delete Selection** | Deletes the currently selected text block.                                                               |
+| `Home` / `End` | **Line Boundary** | Moves to the start / end of the current line.                                                            |
 | `Tab`       | **Indent**           | Inserts 4 spaces for strict and consistent indentation.                                                  |
 | `Enter`     | **New Line**         | Inserts a line break and moves the cursor to the next line.                                              |
 | `Backspace` | **Delete Left**      | Removes the character immediately preceding the cursor.                                                  |
@@ -184,6 +198,7 @@ text manipulations without entering insert mode.
 | `e`                             | **Enter Editor**       | Switches to Editor mode at the current cursor position.                           |
 | `o`                             | **Append New Line**    | Jumps to the end of the current line, inserts a new line, and enters Editor mode. |
 | `h`, `j`, `k`, `l`              | **Move Cursor**        | Moves the cursor Left (`h`), Down (`j`), Up (`k`), or Right (`l`).                |
+| `Home` / `End`                  | **Line Boundary**      | Moves to the start / end of the current line, unless assigned another action.     |
 | `PageUp` / `PageDn`             | **Fast Scroll**        | Jumps 15 lines up or down for rapid vertical navigation through the file.         |
 | `u`                             | **Undo**               | Reverts the last edit operation.                                                  |
 | `U` / `Ctrl + y`                | **Redo**               | Restores the undone edit operation.                                               |

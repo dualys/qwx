@@ -1,6 +1,6 @@
 all: before
-	@cargo build --release --no-default-features -F tree-sitter-nix -F tree-sitter-asm -F tree-sitter-c -F tree-sitter-lua -F tree-sitter-cpp -F tree-sitter-d -F tree-sitter-rust -F tree-sitter-bash -F tree-sitter-python -F tree-sitter-cmake -F tree-sitter-make -F tree-sitter-kconfig -F tree-sitter-ini -F tree-sitter-json -F tree-sitter-fish
-install: completion
+	@cargo build --release --no-default-features -F tree-sitter-nix -F tree-sitter-asm -F tree-sitter-c -F tree-sitter-lua -F tree-sitter-cpp -F tree-sitter-d -F tree-sitter-rust -F tree-sitter-bash -F tree-sitter-python -F tree-sitter-cmake -F tree-sitter-make -F tree-sitter-kconfig -F tree-sitter-ini -F tree-sitter-json -F tree-sitter-fish -F tree-sitter-d
+ install: completion
 	@install -m 755 target/release/qwx /usr/local/bin/qwx
 	@install -m 644 qwx.fish /etc/fish/completions/qwx.fish
 uninstall:

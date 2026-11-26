@@ -104,7 +104,7 @@ tempfile = "3"
 
 
 [features]
-default = ["tree-sitter-rust"]
+default = ["tree-sitter-rust", "tree-sitter-d"]
 tree-sitter-c = ["dep:tree-sitter-c"]
 tree-sitter-d = ["dep:tree-sitter-d"]
 tree-sitter-rust = ["dep:tree-sitter-rust"]
