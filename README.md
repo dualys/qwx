@@ -121,6 +121,11 @@ From within the Search Hub, you can execute Git actions directly on search resul
 `qwx` includes a fully embedded, real-time terminal music player for Spotify (`Player` mode via `Alt + p`, `Alt + m`, or
 `:player`).
 
+The editor appears before the player starts indexing local music in the
+background. The player displays its loading state and remains closable while
+indexing. It scans the configured Music directory, or the home directory if
+none is configured; scan and cache errors are shown in the player.
+
 ### Key Capabilities
 
 - **Now Playing Display**: Real-time progress bar, track title, artists, album, device badge, volume, repeat and shuffle
@@ -138,6 +143,17 @@ From within the Search Hub, you can execute Git actions directly on search resul
 ### Editor Mode Shortcuts (Insert & Edit)
 
 The Editor Mode is dedicated to direct text insertion and modification.
+
+Files must contain valid UTF-8. Saving preserves existing line endings and
+refuses to overwrite a file whose contents changed since it was opened or last
+saved. Writes use a temporary file in the same directory and replace the
+original only after writing succeeds. The check is not a lock against another
+process writing at the same instant. File permissions are retained, but other
+metadata such as ACLs and extended attributes may not be. Files with multiple
+hard links are not replaced. `:w <path>` creates a new file without overwriting
+an existing one. In Normal mode, `:q` quits if all buffers are saved; `:wq`
+saves the active file and quits only if no other buffers have unsaved changes.
+Use `:q!` to discard unsaved changes.
 
 | Shortcut    | Action               | Description                                                                                              |
 |:------------|:---------------------|:---------------------------------------------------------------------------------------------------------|

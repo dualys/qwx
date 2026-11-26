@@ -1,6 +1,6 @@
 use crate::editor::theme::{UI_DMENU_BG, UI_DMENU_FG, get_color_for_capture};
 use crate::finder::{Finder, FinderLayout, list_files};
-use crate::player::MusicPlayer;
+use crate::player::{MusicPlayer, PlayerLoadEvent, PlayerLoader};
 use crate::search::SearchHub;
 use crate::{Action, KeyMap, QwxConfig, build_keymap};
 
@@ -34,6 +34,7 @@ use std::fs::{File, create_dir_all};
 use std::io::{self, BufRead, BufReader, Error, Write};
 use std::path::{Path, PathBuf};
 use std::process::exit;
+use tempfile::NamedTempFile;
 use tree_sitter::Parser;
 use tree_sitter::Tree;
 use tree_sitter::{InputEdit, Language, Point, QueryCursor};
@@ -80,6 +81,10 @@ pub const INIT_NODE_STATE: [Node; 4] = [
         redo_stack: vec![],
         noun: Noun::NULL,
         lba: None,
+        path: None,
+        text: None,
+        saved_hash: None,
+        is_dirty: false,
     },
     Node {
         id: 1,
@@ -92,6 +97,10 @@ pub const INIT_NODE_STATE: [Node; 4] = [
         redo_stack: vec![],
         noun: Noun::NULL,
         lba: None,
+        path: None,
+        text: None,
+        saved_hash: None,
+        is_dirty: false,
     },
     Node {
         id: 2,
@@ -104,6 +113,10 @@ pub const INIT_NODE_STATE: [Node; 4] = [
         redo_stack: vec![],
         noun: Noun::NULL,
         lba: None,
+        path: None,
+        text: None,
+        saved_hash: None,
+        is_dirty: false,
     },
     Node {
         id: 3,
@@ -116,6 +129,10 @@ pub const INIT_NODE_STATE: [Node; 4] = [
         redo_stack: vec![],
         noun: Noun::NULL,
         lba: None,
+        path: None,
+        text: None,
+        saved_hash: None,
+        is_dirty: false,
     },
 ];
 /// Converts a numerical value (0-9) into its corresponding superscript Unicode character.
@@ -254,7 +271,7 @@ impl<W: Write> QwxUi<W> for Qwx {
                 self.config.keys.move_right
             ),
             format!(
-                " Panneaux   : {} {} {} {}",
+                " Panel   : {} {} {} {}",
                 self.config.keys.go_left_panel,
                 self.config.keys.go_bottom_panel,
                 self.config.keys.go_top_panel,
@@ -363,12 +380,26 @@ impl<W: Write> QwxUi<W> for Qwx {
         )
     }
     fn draw_spotify_player(&mut self, w: &mut W) -> Result<(), Error> {
-        self.player.draw_local_player(w, self.width, self.height)?;
-        Ok(())
+        if let Some(player) = &mut self.player {
+            player.draw_local_player(w, self.width, self.height)
+        } else {
+            let message = self
+                .player_error
+                .as_deref()
+                .unwrap_or("Loading music player...");
+            queue!(
+                w,
+                Clear(ClearType::All),
+                MoveTo(0, 0),
+                Print(message),
+                MoveTo(0, 1),
+                Print("Press q or Esc to return to the editor")
+            )?;
+            w.flush()
+        }
     }
     fn draw_player(&mut self, w: &mut W) -> Result<(), Error> {
-        self.player.draw_local_player(w, self.width, self.height)?;
-        Ok(())
+        self.draw_spotify_player(w)
     }
 
     fn draw_web(&mut self, w: &mut W) -> Result<(), Error> {
@@ -617,7 +648,7 @@ impl<W: Write> QwxUi<W> for Qwx {
                     search_term,
                 );
 
-                let name = if is_active && self.editor.is_dirty {
+                let name = if node.is_dirty || (is_active && self.editor.is_dirty) {
                     format!(" {}{}", node.name, "*")
                 } else {
                     format!(" {} ", node.name)
@@ -644,14 +675,33 @@ impl<W: Write> QwxUi<W> for Qwx {
                 queue!(
                     w,
                     SetForegroundColor(color),
-                    MoveTo(start_x, start_y - 1),
+                    MoveTo(start_x, start_y.saturating_sub(1)),
                     Print(lines_display),
-                    MoveTo(center_x, start_y - 1),
-                    Print(name),
-                    MoveTo(dirty_x, start_y - 1),
-                    Print(format!("{:<width$}", info_display, width = 20))
+                    MoveTo(center_x, start_y.saturating_sub(1)),
+                    Print(name.chars().take(p_width as usize).collect::<String>()),
+                    MoveTo(dirty_x, start_y.saturating_sub(1)),
+                    Print(
+                        info_display
+                            .chars()
+                            .take(p_width as usize)
+                            .collect::<String>()
+                    )
                 )?;
             }
+        }
+        if let Some(message) = &self.status_message {
+            let text: String = message
+                .chars()
+                .take(self.width.saturating_sub(1) as usize)
+                .collect();
+            queue!(
+                w,
+                MoveTo(0, self.height.saturating_sub(1)),
+                SetForegroundColor(Color::Red),
+                Clear(ClearType::CurrentLine),
+                Print(text),
+                ResetColor
+            )?;
         }
         w.flush()?;
         Ok(())
@@ -775,7 +825,7 @@ impl QwxPanel for Qwx {
                 }
             });
 
-        if let Some(node) = self.nodes.get(node_id)
+        if let Some(node) = self.nodes.iter().find(|node| node.id == node_id)
             && node.is_file
         {
             // On force l'ancrage pour réparer la spatial_map vide
@@ -786,11 +836,13 @@ impl QwxPanel for Qwx {
             }
 
             let mut ed = Ji::default();
-            ed.file_path = Some(self.current_dir.join(&node.name));
+            ed.file_path = node.path.clone();
 
-            // 2. On charge depuis la mémoire Node (pour ne pas remettre le curseur à zéro !)
-            let full_text = node.content.join("\n");
-            ed.rope = Rope::from_str(&full_text);
+            if let Some(text) = &node.text {
+                ed.rope = text.clone();
+            }
+            ed.saved_hash = node.saved_hash;
+            ed.is_dirty = node.is_dirty;
 
             let theme_keys = vec![
                 "keyword",
@@ -864,13 +916,11 @@ impl QwxPanel for Qwx {
 ///
 /// # Returns
 /// - `Ok(Vec<String>)`: A vector of strings, where each string represents a single line from the file.
-/// - `Err(Error)`: An I/O error encountered during the file operation, except for invalid UTF-8 data errors,
-///                 which are silently ignored.
+/// - `Err(Error)`: An I/O error, including invalid UTF-8 data.
 ///
 /// # Behavior
 /// - This function uses a buffered reader to read the file line by line.
-/// - Lines that cannot be read due to invalid UTF-8 data are skipped without stopping the process.
-/// - Any other types of errors, such as file permissions issues or file not found, cause the function to return an error.
+/// - Invalid UTF-8 and other read errors are returned to the caller.
 ///
 /// # Example
 /// ```
@@ -888,23 +938,11 @@ impl QwxPanel for Qwx {
 /// ```
 ///
 /// # Errors
-/// The function propagates errors from the `File::open` method and the `BufReader` while reading the lines,
-/// except when an error is caused by invalid UTF-8 data (`ErrorKind::InvalidData`), which is ignored.
+/// The function propagates errors from opening or reading the file.
 pub fn qwx_read_lines(path: impl AsRef<Path>) -> Result<Vec<String>, Error> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
-    let mut lines = Vec::new();
-
-    for line_result in reader.lines() {
-        match line_result {
-            Ok(line) => lines.push(line),
-            Err(e) if e.kind() == io::ErrorKind::InvalidData => {
-                continue;
-            }
-            Err(e) => return Err(e), // On continue de propager les autres erreurs (ex: droits d'accès)
-        }
-    }
-    Ok(lines)
+    reader.lines().collect()
 }
 
 /// Loads a `Node` from the given file path and assigns it a specific ID.
@@ -960,7 +998,14 @@ pub fn qwx_read_lines(path: impl AsRef<Path>) -> Result<Vec<String>, Error> {
 /// - If the file is empty or incompatible with Tree-sitter parsing, it defaults to displaying plain text in white color.
 /// - Ensure that the `Color` type and `Ji` library functionalities (e.g., `open`, `get_colored_spans`) are properly implemented and accessible.
 pub fn qwx_load_node(id: usize, path: &Path) -> Result<Node, Error> {
-    let content = qwx_read_lines(path)?;
+    let path = path.canonicalize()?;
+    let temp_ji = Ji::open(&path)?;
+    let content: Vec<String> = temp_ji
+        .rope
+        .to_string()
+        .lines()
+        .map(str::to_owned)
+        .collect();
     let name = path
         .file_name()
         .unwrap_or_default()
@@ -971,7 +1016,7 @@ pub fn qwx_load_node(id: usize, path: &Path) -> Result<Node, Error> {
 
     let mut colored_lines = Vec::new();
 
-    if is_file && let Ok(temp_ji) = Ji::open(path) {
+    if is_file {
         let spans = temp_ji.get_colored_spans();
 
         // On ne peuple le cache que si Tree-sitter a vraiment renvoyé des couleurs
@@ -1018,6 +1063,10 @@ pub fn qwx_load_node(id: usize, path: &Path) -> Result<Node, Error> {
         redo_stack: Vec::new(),
         noun: Noun::NULL,
         lba: None,
+        path: Some(path),
+        text: Some(temp_ji.rope),
+        saved_hash: temp_ji.saved_hash,
+        is_dirty: false,
     })
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1072,11 +1121,14 @@ pub struct Qwx {
     panes: [PaneState; 4],
     mode: Mode,
     menu_input: String,
+    status_message: Option<String>,
     editor: Ji,
     search_input: String,
     pub last_search_query: Option<String>,
     pub search_hub: SearchHub,
-    pub player: MusicPlayer,
+    pub player: Option<MusicPlayer>,
+    player_loader: Option<PlayerLoader>,
+    player_error: Option<String>,
     pub is_portrait: bool,
 }
 
@@ -1277,6 +1329,10 @@ pub struct Node {
     pub undo_stack: Vec<EditSnapshot>,
     pub redo_stack: Vec<EditSnapshot>,
     pub noun: Noun,
+    path: Option<PathBuf>,
+    text: Option<Rope>,
+    saved_hash: Option<blake3::Hash>,
+    is_dirty: bool,
 }
 
 /// Represents the state of a pane in an application.
@@ -1576,6 +1632,82 @@ impl<W: Write> QwxRenderer<W> for Qwx {
 }
 
 impl Qwx {
+    fn poll_player_loader(&mut self) {
+        while let Some(loader) = &self.player_loader {
+            match loader.try_recv() {
+                Ok(PlayerLoadEvent::Ready(client)) => {
+                    let mut player = MusicPlayer::with_client(client);
+                    player.refresh_playback_in_background();
+                    self.player = Some(player);
+                }
+                Ok(PlayerLoadEvent::Library(result)) => {
+                    if let Some(player) = &mut self.player {
+                        match result {
+                            Ok(library) => player.apply_library(library),
+                            Err(error) => {
+                                player.set_status(format!("Music library error: {error}"))
+                            }
+                        }
+                    }
+                    self.player_loader = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    let message = "Music player loader stopped unexpectedly.".to_string();
+                    if let Some(player) = &mut self.player {
+                        player.set_status(message);
+                    } else {
+                        self.player_error = Some(message);
+                    }
+                    self.player_loader = None;
+                }
+            }
+        }
+    }
+
+    fn save_active(&mut self, path: Option<&Path>) -> bool {
+        let result = match path {
+            Some(path) => self.editor.save_as(path),
+            None => self.editor.save(),
+        };
+        match result {
+            Ok(()) => {
+                self.sync_node_content();
+                self.status_message = None;
+                true
+            }
+            Err(error) => {
+                self.status_message = Some(format!("Save failed: {error}"));
+                false
+            }
+        }
+    }
+
+    fn quit_if_saved(&mut self) {
+        if self.editor.is_dirty || self.nodes.iter().any(|node| node.is_dirty) {
+            self.status_message =
+                Some("Unsaved changes: save them or use :q! to discard".to_string());
+        } else {
+            self.running = false;
+        }
+    }
+
+    fn handle_quit_command(&mut self) -> bool {
+        match self.menu_input.trim() {
+            ":q!" => self.running = false,
+            ":q" => self.quit_if_saved(),
+            ":wq" => {
+                if self.save_active(None) {
+                    self.quit_if_saved();
+                }
+            }
+            _ => return false,
+        }
+        self.mode = Mode::Normal;
+        self.menu_input.clear();
+        true
+    }
+
     pub fn refresh_and_ask<W: Write>(&mut self, path: Vec<String>, w: &mut W) -> ! {
         self.running = false;
         self.run(w).expect("failed to refresh");
@@ -1634,6 +1766,10 @@ impl Qwx {
                 node.undo_stack = self.editor.undo_stack.clone();
                 node.redo_stack = self.editor.redo_stack.clone();
                 node.content = new_content;
+                node.text = Some(self.editor.rope.clone());
+                node.path = self.editor.file_path.clone();
+                node.saved_hash = self.editor.saved_hash;
+                node.is_dirty = self.editor.is_dirty;
 
                 let mut new_colored = Vec::new();
                 let spans = self.editor.get_colored_spans();
@@ -1890,7 +2026,7 @@ impl Qwx {
                     }
                     Action::OpenMenu => {
                         self.mode = Mode::Menu;
-                        self.menu_input.clear();
+                        self.menu_input = ":".to_string();
                         break;
                     }
                     Action::Search => {
@@ -1904,7 +2040,6 @@ impl Qwx {
                     }
                     Action::OpenPlayer => {
                         self.mode = Mode::Player;
-                        self.player.refresh_playback_state();
                         break;
                     }
                     Action::PanelRotateClockwise => {
@@ -1993,8 +2128,10 @@ impl Qwx {
                         break;
                     }
                     Action::Quit => {
-                        self.running = false;
-                        break;
+                        self.quit_if_saved();
+                        if !self.running {
+                            break;
+                        }
                     }
                     Action::PageUp => {
                         let step = 15;
@@ -2024,8 +2161,7 @@ impl Qwx {
                         self.follow();
                     }
                     Action::SaveDocument => {
-                        self.editor.save().unwrap();
-                        break;
+                        self.save_active(None);
                     }
                     Action::IncreaseWorkspace => {
                         let pane = self.active_pane_mut();
@@ -2065,7 +2201,13 @@ impl Qwx {
                         break;
                     }
                     (KeyModifiers::NONE, KeyCode::Enter) => {
-                        if let Some(cmd) = self.menu_input.strip_prefix('!') {
+                        if self.handle_quit_command() {
+                            break;
+                        } else if let Some(cmd) = self
+                            .menu_input
+                            .strip_prefix(":!")
+                            .or_else(|| self.menu_input.strip_prefix('!'))
+                        {
                             let cmd_clean = cmd.trim();
                             if let Some(dir_name) = cmd_clean.strip_prefix("mkdir ") {
                                 let target_path = self.current_dir.join(dir_name.trim());
@@ -2082,22 +2224,32 @@ impl Qwx {
                                     .status();
 
                                 for node in self.nodes.iter_mut() {
-                                    if node.is_file {
-                                        let full_path = self.current_dir.join(&node.name);
-                                        if let Ok(fresh_node) = qwx_load_node(node.id, &full_path) {
-                                            node.content = fresh_node.content;
-                                            node.colored_lines = fresh_node.colored_lines;
+                                    if node.is_file
+                                        && !node.is_dirty
+                                        && let Some(path) = &node.path
+                                    {
+                                        match qwx_load_node(node.id, path) {
+                                            Ok(fresh_node) => *node = fresh_node,
+                                            Err(error) => {
+                                                self.status_message = Some(format!(
+                                                    "Reload failed for {}: {error}",
+                                                    path.display()
+                                                ));
+                                            }
                                         }
                                     }
                                 }
+                                if !self.editor.is_dirty {
+                                    self.load_active_pane_file();
+                                }
                             }
                         } else if let Some(file_name) = self.menu_input.strip_prefix(":w ") {
-                            let clean_name = file_name.trim();
+                            let clean_name = file_name.trim().to_owned();
                             if !clean_name.is_empty() {
-                                // On définit le chemin complet et on sauvegarde
-                                let target_path = self.current_dir.join(clean_name);
-                                self.editor.file_path = Some(target_path.clone());
-                                let _ = self.editor.save();
+                                let target_path = self.current_dir.join(&clean_name);
+                                if !self.save_active(Some(&target_path)) {
+                                    continue;
+                                }
 
                                 // On met à jour le noeud dans le Tesseract pour qu'il devienne un "vrai" fichier
                                 let active_idx = self.focus as usize;
@@ -2106,7 +2258,7 @@ impl Qwx {
                                     if let Some(node) =
                                         self.nodes.iter_mut().find(|n| n.id == node_id)
                                     {
-                                        node.name = clean_name.to_string();
+                                        node.name = clean_name;
                                         node.ext = target_path
                                             .extension()
                                             .unwrap_or_default()
@@ -2141,7 +2293,6 @@ impl Qwx {
                             || self.menu_input.trim() == ":spotify"
                         {
                             self.mode = Mode::Player;
-                            self.player.refresh_playback_state();
                             self.menu_input.clear();
                             break;
                         } else if self.menu_input.trim() == ":help" {
@@ -2156,7 +2307,9 @@ impl Qwx {
                         self.menu_input.pop();
                     }
                     (m, KeyCode::Char(c)) if m.is_empty() || m == KeyModifiers::SHIFT => {
-                        self.menu_input.push(c);
+                        if c != ':' || self.menu_input != ":" {
+                            self.menu_input.push(c);
+                        }
                     }
                     _ => {}
                 },
@@ -2200,17 +2353,20 @@ impl Qwx {
                     }
                     (KeyModifiers::CONTROL, KeyCode::Char('s')) => {
                         if self.editor.file_path.is_some() {
-                            let _ = self.editor.save();
+                            if !self.save_active(None) {
+                                continue;
+                            }
                         } else {
                             self.mode = Mode::Menu;
                             self.menu_input = ":w ".to_string();
+                            break;
                         }
                         // Scelle le Noun et alloue dans jinshu
                         let focus_idx = self.focus as usize;
                         if let Some(view) = self.views.get(focus_idx) {
                             let node_id = view.active_node_id;
                             if let Some(node) = self.nodes.iter_mut().find(|n| n.id == node_id) {
-                                let bytes = node.content.join("\n").into_bytes();
+                                let bytes = self.editor.rope.to_string().into_bytes();
                                 node.noun = noun::Noun::of(&bytes);
                                 // Alloue un LBA
                                 if let Some(lba) = self.engine.allocator.allocate_node() {
@@ -2380,17 +2536,37 @@ impl Qwx {
                             let filename = &files[self.finder.selected_file];
                             let full_path = self.current_dir.join(filename);
 
-                            let node_id = if let Some(existing_node) =
-                                self.nodes.iter().find(|n| n.name == *filename)
+                            let canonical_path = match full_path.canonicalize() {
+                                Ok(path) => path,
+                                Err(error) => {
+                                    self.status_message = Some(format!(
+                                        "Open failed for {}: {error}",
+                                        full_path.display()
+                                    ));
+                                    break;
+                                }
+                            };
+                            let node_id = if let Some(existing_node) = self
+                                .nodes
+                                .iter()
+                                .find(|n| n.path.as_ref() == Some(&canonical_path))
                             {
                                 existing_node.id
                             } else {
-                                let new_id = self.nodes.len();
-                                if let Ok(node) = qwx_load_node(new_id, &full_path) {
-                                    self.nodes.push(node);
-                                    new_id
-                                } else {
-                                    break;
+                                let new_id =
+                                    self.nodes.iter().map(|node| node.id).max().unwrap_or(0) + 1;
+                                match qwx_load_node(new_id, &canonical_path) {
+                                    Ok(node) => {
+                                        self.nodes.push(node);
+                                        new_id
+                                    }
+                                    Err(error) => {
+                                        self.status_message = Some(format!(
+                                            "Open failed for {}: {error}",
+                                            full_path.display()
+                                        ));
+                                        break;
+                                    }
                                 }
                             };
                             let active_idx = self.focus as usize;
@@ -3106,12 +3282,21 @@ impl Qwx {
     pub fn handle_player<W: Write>(&mut self, w: &mut W) {
         self.reset(w).expect("failed to reset");
         loop {
+            self.poll_player_loader();
+            if let Some(player) = &mut self.player {
+                player.poll_playback_refresh();
+            }
             self.draw_spotify_player(w)
                 .expect("failed to draw spotify player");
             if poll(std::time::Duration::from_millis(100)).unwrap_or(false) {
                 match read().expect("failed to get terminal input") {
                     Event::Key(key) => {
-                        if !self.player.handle_key(key.code, key.modifiers) {
+                        let keep_open = if let Some(player) = &mut self.player {
+                            player.handle_key(key.code, key.modifiers)
+                        } else {
+                            !matches!(key.code, KeyCode::Esc | KeyCode::Char('q'))
+                        };
+                        if !keep_open {
                             self.mode = Mode::Normal;
                             break;
                         }
@@ -3142,6 +3327,17 @@ impl Qwx {
             execute!(w, Hide, EnterAlternateScreen, MoveTo(0, 0))?;
             while self.running {
                 self.draw(w)?;
+                if self.player.is_none()
+                    && self.player_loader.is_none()
+                    && self.player_error.is_none()
+                {
+                    match PlayerLoader::start() {
+                        Ok(loader) => self.player_loader = Some(loader),
+                        Err(error) => {
+                            self.player_error = Some(format!("Player startup failed: {error}"))
+                        }
+                    }
+                }
                 self.handle_events(w);
             }
             execute!(w, LeaveAlternateScreen, Show)?;
@@ -3293,7 +3489,6 @@ impl Qwx {
     /// Creates a new instance of the editor with the specified path and open mode.
     pub fn new(path: &Path, open_mode: Mode, c: &QwxConfig) -> Self {
         let (width, height) = size().expect("failed to get size");
-
         let (dir_path, target_file) = if path.is_file() {
             (path.parent().unwrap_or_else(|| Path::new(".")), Some(path))
         } else {
@@ -3321,35 +3516,70 @@ impl Qwx {
                 panes: [INIT_PANE_STATE; 4],
                 mode: Mode::Normal,
                 menu_input: String::new(),
+                status_message: None,
                 editor: Ji::default(),
                 search_input: String::new(),
                 last_search_query: None,
                 search_hub: SearchHub::default(),
-                player: MusicPlayer::default(),
+                player: None,
+                player_loader: None,
+                player_error: None,
                 engine: StorageEngine::new(1024, &MOCK_DEVICE),
                 is_portrait: width < height.saturating_mul(2),
             };
         }
         let mut nodes: Vec<Node> = Vec::new();
         let mut views: Vec<View> = Vec::new();
-        let mut target_node_id = 0;
+        let mut target_node_id = None;
 
-        for (i, filename) in file_list.iter().enumerate() {
+        let mut status_message = None;
+        for filename in &file_list {
             let fpath = PathBuf::from(filename);
-            if let Ok(node) = qwx_load_node(i, fpath.as_path()) {
-                if let Some(target) = target_file {
-                    if let (Ok(p1), Ok(p2)) = (fpath.canonicalize(), target.canonicalize()) {
-                        if p1 == p2 {
-                            target_node_id = i;
+            let i = nodes.len();
+            match qwx_load_node(i, fpath.as_path()) {
+                Ok(node) => {
+                    if let Some(target) = target_file {
+                        if let (Ok(p1), Ok(p2)) = (fpath.canonicalize(), target.canonicalize()) {
+                            if p1 == p2 {
+                                target_node_id = Some(i);
+                            }
+                        } else if fpath == target {
+                            target_node_id = Some(i);
                         }
-                    } else if fpath == target {
-                        target_node_id = i;
+                    }
+                    nodes.push(node);
+                    views.push(View { active_node_id: i });
+                }
+                Err(error) => {
+                    if target_file.is_none() || Some(fpath.as_path()) == target_file {
+                        status_message =
+                            Some(format!("Open failed for {}: {error}", fpath.display()));
                     }
                 }
-                nodes.push(node);
-                views.push(View { active_node_id: i });
             }
         }
+
+        if let Some(target) = target_file
+            && target_node_id.is_none()
+        {
+            let id = nodes.len();
+            nodes.push(Node {
+                id,
+                name: target
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+                is_file: false,
+                ..Node::default()
+            });
+            views.push(View { active_node_id: id });
+            target_node_id = Some(id);
+            if status_message.is_none() {
+                status_message = Some(format!("Open failed for {}", target.display()));
+            }
+        }
+        let target_node_id = target_node_id.unwrap_or(0);
 
         let mut editor = Ji::default();
         if let Some(target) = target_file
@@ -3385,6 +3615,7 @@ impl Qwx {
             panes,
             mode: open_mode,
             menu_input: String::new(),
+            status_message,
             nodes: nodes.clone(),
             views,
             finder_layout: FinderLayout::SideBySide,
@@ -3394,7 +3625,9 @@ impl Qwx {
             search_input: String::new(),
             last_search_query: None,
             search_hub: SearchHub::new(),
-            player: MusicPlayer::default(),
+            player: None,
+            player_loader: None,
+            player_error: None,
             front_panes: [INIT_PANE_STATE; 4],
             back_panes: [INIT_PANE_STATE; 4],
             current_facet: Facet::Front,
@@ -3936,9 +4169,18 @@ pub struct Ji {
     pub redo_stack: Vec<EditSnapshot>,
     pub clipboard: Option<String>,
     pub is_dirty: bool,
+    saved_hash: Option<blake3::Hash>,
 }
 
 impl Ji {
+    fn content_hash(&self) -> blake3::Hash {
+        let mut hasher = blake3::Hasher::new();
+        for chunk in self.rope.chunks() {
+            hasher.update(chunk.as_bytes());
+        }
+        hasher.finalize()
+    }
+
     /// Safe line access — never panics.
     fn safe_line(&self, line: usize) -> ropey::RopeSlice<'_> {
         let max = self.rope.len_lines().saturating_sub(1);
@@ -3976,6 +4218,7 @@ impl Ji {
             self.cursor_col = snapshot.cursor_col;
             self.selection = None;
             self.update_syntax_tree();
+            self.is_dirty = self.saved_hash != Some(self.content_hash());
         }
     }
 
@@ -3995,6 +4238,7 @@ impl Ji {
             self.cursor_col = snapshot.cursor_col;
             self.selection = None;
             self.update_syntax_tree();
+            self.is_dirty = self.saved_hash != Some(self.content_hash());
         }
     }
 
@@ -4124,20 +4368,89 @@ impl Ji {
 
     /// Saves the current state of the data to a file at the specified file path.
     pub fn save(&mut self) -> io::Result<()> {
-        if let Some(ref path) = self.file_path {
-            let file = File::create(path)?;
-            let writer = io::BufWriter::new(file);
-            self.rope.write_to(writer)?;
-            self.is_dirty = false;
+        let path = self.file_path.clone().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "no file path; use :w <path>")
+        })?;
+        self.save_as(&path)
+    }
+
+    fn save_as(&mut self, path: &Path) -> io::Result<()> {
+        let resolved = path.canonicalize().ok();
+        let same_file = self.file_path.as_deref() == Some(path)
+            || (resolved.is_some() && self.file_path.as_deref() == resolved.as_deref());
+        let expected = if same_file { self.saved_hash } else { None };
+        let target = if expected.is_some() {
+            path.canonicalize()?
+        } else {
+            let name = path.file_name().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "path has no file name")
+            })?;
+            let parent = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            parent.canonicalize()?.join(name)
+        };
+        let parent = target
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+
+        let check_original = || -> io::Result<()> {
+            if let Some(expected) = expected {
+                let bytes = std::fs::read(&target)?;
+                if blake3::hash(&bytes) != expected {
+                    return Err(io::Error::other("file changed on disk; save refused"));
+                }
+            }
+            Ok(())
+        };
+        check_original()?;
+
+        let mut temp = NamedTempFile::new_in(parent)?;
+        if expected.is_some() {
+            let metadata = std::fs::metadata(&target)?;
+            if !metadata.is_file() || metadata.permissions().readonly() {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "file is not writable",
+                ));
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if metadata.nlink() > 1 {
+                    return Err(io::Error::other(
+                        "refusing to replace a file with multiple hard links",
+                    ));
+                }
+            }
+            temp.as_file().set_permissions(metadata.permissions())?;
         }
+        self.rope.write_to(temp.as_file_mut())?;
+        temp.as_file_mut().flush()?;
+        temp.as_file().sync_all()?;
+        check_original()?;
+
+        if expected.is_some() {
+            temp.persist(&target).map_err(|error| error.error)?;
+        } else {
+            temp.persist_noclobber(&target)
+                .map_err(|error| error.error)?;
+        }
+        self.file_path = Some(target);
+        self.saved_hash = Some(self.content_hash());
+        self.is_dirty = false;
         Ok(())
     }
 
     /// Opens a file at the specified path and initializes a custom editor instance.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let path_ref = path.as_ref();
-        let file = File::open(path_ref)?;
-        let rope = Rope::from_reader(BufReader::new(file))?;
+        let bytes = std::fs::read(path_ref)?;
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let rope = Rope::from_str(text);
 
         let theme_keys = vec![
             "keyword",
@@ -4178,12 +4491,20 @@ impl Ji {
             "punctuation.special",
         ];
 
-        let filename = path_ref.file_name().expect("");
+        let filename = path_ref
+            .file_name()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
         let ext = path_ref.extension().unwrap_or(filename);
+        let filename = filename
+            .to_str()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "file name is not UTF-8"))?;
+        let ext = ext.to_str().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "file extension is not UTF-8")
+        })?;
 
         let mut ji = Self {
             rope,
-            file_path: Some(path_ref.to_path_buf()),
+            file_path: Some(path_ref.canonicalize()?),
             cursor_line: 0,
             cursor_col: 0,
             parser: Parser::new(),
@@ -4195,13 +4516,10 @@ impl Ji {
             redo_stack: Vec::new(),
             clipboard: None,
             is_dirty: false,
+            saved_hash: Some(blake3::hash(&bytes)),
         };
 
-        if let Some(config) = detect_language(
-            ext.to_str().expect(""),
-            filename.to_str().expect(""),
-            &theme_keys,
-        ) {
+        if let Some(config) = detect_language(ext, filename, &theme_keys) {
             ji.query = Query::new(&config.ts_config.language, config.query_string).ok();
             let _ = ji.parser.set_language(&config.ts_config.language);
             ji.lang_config = Some(config);
@@ -4458,6 +4776,213 @@ impl Ji {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn command_editor(path: &Path) -> Qwx {
+        let config = QwxConfig::default();
+        let dir = path.parent().unwrap();
+        Qwx {
+            engine: StorageEngine::new(1024, &MOCK_DEVICE),
+            keymap: build_keymap(&config),
+            config,
+            finder_layout: FinderLayout::SideBySide,
+            finder: Finder::new(dir, FinderLayout::SideBySide),
+            finder_research: String::new(),
+            current_facet: Facet::Front,
+            front_panes: [INIT_PANE_STATE; 4],
+            back_panes: [INIT_PANE_STATE; 4],
+            spatial_map: HashMap::new(),
+            current_dir: dir.into(),
+            nodes: vec![qwx_load_node(0, path).unwrap()],
+            views: vec![View { active_node_id: 0 }; 4],
+            width: 80,
+            height: 24,
+            running: true,
+            focus: PaneFocus::TopLeft,
+            panes: [INIT_PANE_STATE; 4],
+            mode: Mode::Menu,
+            menu_input: String::new(),
+            status_message: None,
+            editor: Ji::open(path).unwrap(),
+            search_input: String::new(),
+            last_search_query: None,
+            search_hub: SearchHub::default(),
+            player: None,
+            player_loader: None,
+            player_error: None,
+            is_portrait: false,
+        }
+    }
+
+    #[test]
+    fn quit_command_refuses_unsaved_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        std::fs::write(&path, "original").unwrap();
+        let mut qwx = command_editor(&path);
+        qwx.editor.insert_char('x');
+        qwx.menu_input = ":q".to_string();
+        assert!(qwx.handle_quit_command());
+        assert!(qwx.running);
+        assert!(
+            qwx.status_message
+                .as_deref()
+                .unwrap()
+                .contains("Unsaved changes")
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "original");
+
+        qwx.menu_input = ":q!".to_string();
+        assert!(qwx.handle_quit_command());
+        assert!(!qwx.running);
+    }
+
+    #[test]
+    fn write_quit_saves_active_file_but_protects_other_buffers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        std::fs::write(&path, "original").unwrap();
+        let mut qwx = command_editor(&path);
+        qwx.editor.insert_char('x');
+        qwx.nodes.push(Node {
+            id: 1,
+            is_dirty: true,
+            ..Node::default()
+        });
+        qwx.menu_input = ":wq".to_string();
+        assert!(qwx.handle_quit_command());
+        assert!(qwx.running);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "xoriginal");
+        assert!(
+            qwx.status_message
+                .as_deref()
+                .unwrap()
+                .contains("Unsaved changes")
+        );
+
+        qwx.nodes[1].is_dirty = false;
+        qwx.menu_input = ":wq".to_string();
+        assert!(qwx.handle_quit_command());
+        assert!(!qwx.running);
+    }
+
+    #[test]
+    fn write_quit_reports_save_failure_without_exiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        std::fs::write(&path, "original").unwrap();
+        let mut qwx = command_editor(&path);
+        qwx.editor.insert_char('x');
+        std::fs::write(&path, "external").unwrap();
+        qwx.menu_input = ":wq".to_string();
+        assert!(qwx.handle_quit_command());
+        assert!(qwx.running);
+        assert!(qwx.editor.is_dirty);
+        assert!(
+            qwx.status_message
+                .as_deref()
+                .unwrap()
+                .starts_with("Save failed:")
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+    }
+
+    #[test]
+    fn save_preserves_exact_line_endings_and_detects_external_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        std::fs::write(&path, b"one\r\ntwo\r\n").unwrap();
+
+        let node = qwx_load_node(0, &path).unwrap();
+        assert_eq!(node.text.unwrap().to_string(), "one\r\ntwo\r\n");
+        let mut editor = Ji::open(&path).unwrap();
+        editor.save().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"one\r\ntwo\r\n");
+        editor.save_as(&path).unwrap();
+
+        editor.insert_char('x');
+        std::fs::write(&path, b"external").unwrap();
+        assert!(editor.save().is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"external");
+        assert!(editor.is_dirty);
+    }
+
+    #[test]
+    fn rejects_invalid_utf8_instead_of_skipping_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        std::fs::write(&path, b"first\n\xff\nlast").unwrap();
+        assert_eq!(
+            qwx_read_lines(&path).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert!(qwx_load_node(0, &path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"first\n\xff\nlast");
+    }
+
+    #[test]
+    fn save_as_never_overwrites_an_unobserved_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("original.txt");
+        let existing = dir.path().join("existing.txt");
+        let new = dir.path().join("new.txt");
+        std::fs::write(&original, b"original").unwrap();
+        std::fs::write(&existing, b"existing").unwrap();
+        let mut editor = Ji::open(&original).unwrap();
+        editor.insert_char('x');
+        assert!(editor.save_as(&existing).is_err());
+        assert_eq!(std::fs::read(&existing).unwrap(), b"existing");
+        assert_eq!(editor.file_path.as_deref(), Some(original.as_path()));
+        assert!(editor.is_dirty);
+        editor.save_as(&new).unwrap();
+        assert_eq!(std::fs::read(&new).unwrap(), b"xoriginal");
+        assert_eq!(std::fs::read(&original).unwrap(), b"original");
+        assert!(!editor.is_dirty);
+    }
+
+    #[test]
+    fn undo_and_redo_update_dirty_state_against_saved_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        std::fs::write(&path, b"text").unwrap();
+        let mut editor = Ji::open(&path).unwrap();
+        editor.insert_char('x');
+        editor.undo();
+        assert!(!editor.is_dirty);
+        editor.redo();
+        assert!(editor.is_dirty);
+        editor.save().unwrap();
+        editor.undo();
+        assert!(editor.is_dirty);
+        editor.redo();
+        assert!(!editor.is_dirty);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_preserves_symlink_and_refuses_hardlinks() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        let link = dir.path().join("link.txt");
+        std::fs::write(&path, b"text").unwrap();
+        symlink(&path, &link).unwrap();
+        let mut editor = Ji::open(&link).unwrap();
+        editor.insert_char('x');
+        editor.save().unwrap();
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"xtext");
+        let hardlink = dir.path().join("hardlink.txt");
+        std::fs::hard_link(&path, &hardlink).unwrap();
+        editor.insert_char('y');
+        assert!(editor.save().is_err());
+        assert_eq!(std::fs::read(&hardlink).unwrap(), b"xtext");
+        assert!(editor.is_dirty);
+    }
 
     #[test]
     fn test_ji_insert_and_undo_redo() {

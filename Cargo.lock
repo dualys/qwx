@@ -114,6 +114,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
+name = "bincode"
+version = "1.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -473,6 +482,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cubefs"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "337284a3aa52597fd6ea5a0eed159b11f2ffb3da81c149c5d536b32c9c2c22fa"
+dependencies = [
+ "kpack",
+]
+
+[[package]]
 name = "dasp_sample"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -809,6 +827,12 @@ name = "hermit-abi"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
+
+[[package]]
+name = "hex"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hound"
@@ -1650,12 +1674,16 @@ dependencies = [
 name = "qwx"
 version = "0.1.0"
 dependencies = [
+ "bincode",
+ "blake3",
  "clap",
  "clap_complete",
  "crates_io_api",
  "crossterm",
+ "cubefs",
  "dirs",
  "git2",
+ "hex",
  "ignore",
  "indicatif",
  "inquire",
@@ -1671,6 +1699,7 @@ dependencies = [
  "serde",
  "serde_json",
  "symphonia",
+ "tempfile",
  "toml",
  "tree-sitter",
  "tree-sitter-ada",
