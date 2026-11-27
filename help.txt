@@ -243,14 +243,29 @@ NAVIGATION
                         which instantly takes center without ever breaking your concentration.
      
                         The keyboard shortcuts to manipulate zen:
-                        
-                                Ctrl+z enable the zen mode and then:
 
-                                        h shifts the Zen focus to the left panel.
-                                        l shifts the Zen focus to the right panel.
-                                        j shifts the Zen focus to the bottom panel.
-                                        k shifts the Zen focus to the top panel.
-                                        q redraws the original grid and quits the mode.
+                                Alt+z toggles Zen in Normal or Editor mode.
+
+                                In Normal mode, Ctrl+h/j/k/l selects a neighboring panel.
+                                Alt+z again restores the previous grid or portrait layout.
+                                Editing and search remain available while Zen is active.
+                                Ctrl+z remains undo in Editor mode.
+
+                STATUS BAR
+
+                        The bottom bar uses the dark XWQ-inspired theme.
+                        It shows the current mode, file, modified marker and line position.
+                        During search it shows the query, match count or regex errors.
+                        Long queries show their most recently typed characters.
+                        Messages and context-sensitive shortcuts appear on the right.
+                       Local time appears as HH:MM when there is enough room.
+
+                FINDER FILTERS
+
+                       Type text to match a name, ignoring case. Combine filters with spaces:
+                       #rs extension, ^main starts with, $test ends with, *text contains.
+                       @f shows only files; @d shows only directories.
+                       Example: @f #rs ^main. Backspace restores results; F5 reloads.
                 RESCUE
 
                         This emergency mode instantly freezes higher dimensions, complex rendering,

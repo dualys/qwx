@@ -272,7 +272,10 @@ fn draw_side_by_side_finder<W: Write>(
         MoveTo(start_x, start_y + 1),
         Print("│"),
         SetForegroundColor(FINDER_BORDER),
-        Print(format!(" {} ", research)),
+        Print(format_item_name(
+            &format!(" {} ", research),
+            width.saturating_sub(2) as usize
+        )),
         SetForegroundColor(FINDER_BORDER),
         MoveTo(start_x + width - 1, start_y + 1),
         Print("│"),
@@ -423,7 +426,10 @@ fn draw_single_finder<W: Write>(
         MoveTo(start_x, start_y + 1),
         Print("│"),
         SetForegroundColor(FINDER_BORDER),
-        Print(format!(" {} ", research)),
+        Print(format_item_name(
+            &format!(" {} ", research),
+            width.saturating_sub(2) as usize
+        )),
         SetForegroundColor(FINDER_BORDER),
         MoveTo(start_x + width - 1, start_y + 1),
         Print("│"),
@@ -536,7 +542,10 @@ fn draw_grid_finder<W: Write>(
         MoveTo(start_x, start_y + 1),
         Print("│"),
         SetForegroundColor(FINDER_BORDER),
-        Print(format!(" {} ", research)),
+        Print(format_item_name(
+            &format!(" {} ", research),
+            width.saturating_sub(2) as usize
+        )),
         SetForegroundColor(FINDER_BORDER),
         MoveTo(start_x + width - 1, start_y + 1),
         Print("│"),
@@ -771,7 +780,10 @@ fn draw_miller_finder<W: Write>(
         MoveTo(start_x, start_y + 1),
         Print("│"),
         SetForegroundColor(FINDER_BORDER),
-        Print(format!(" {} ", research)),
+        Print(format_item_name(
+            &format!(" {} ", research),
+            width.saturating_sub(2) as usize
+        )),
         SetForegroundColor(FINDER_BORDER),
         MoveTo(start_x + width - 1, start_y + 1),
         Print("│"),
@@ -999,7 +1011,10 @@ fn draw_commander_finder<W: Write>(
         MoveTo(start_x, start_y + 1),
         Print("│"),
         SetForegroundColor(FINDER_BORDER),
-        Print(format!(" {} ", research)),
+        Print(format_item_name(
+            &format!(" {} ", research),
+            width.saturating_sub(2) as usize
+        )),
         SetForegroundColor(FINDER_BORDER),
         MoveTo(start_x + width - 1, start_y + 1),
         Print("│"),
@@ -1848,10 +1863,6 @@ pub fn list_sub_files(path: &Path) -> Vec<String> {
 /// - `base_files`:
 ///     A vector of strings representing the files associated with or derived from the `base_directories`.
 ///
-/// - `deep_search_cache`:
-///     An optional tuple containing a string identifier and a vector of strings for caching the results of deep searches.
-///     The first element is a keyword or identifier, and the second element represents the cached list of matching files or directories.
-///
 /// - `selected_dir`:
 ///     A public field representing the index of the currently selected directory in the `directories` vector.
 ///
@@ -2070,94 +2081,133 @@ impl Finder {
             };
         }
     }
-    /// Filters and updates the file and directory listings based on the given search query.
-    ///
-    /// # Parameters
-    /// - `&mut self`: The mutable reference to the current struct instance.
-    /// - `research: String`: The search query string to filter files and directories. The query
-    ///   supports modifiers for more specific filtering:
-    ///   - `=`: Matches exact names.
-    ///   - `^`: Matches names starting with the provided value.
-    ///   - `$`: Matches names ending with the provided value.
-    ///   - `!`: Excludes names containing the provided value.
-    ///   - `*`: (Default) Matches names containing the provided value.
-    ///
-    ///   Alternatively, if the search query starts with `?`, a "deep search" mode is triggered
-    ///   where further query modifiers can be applied to refine the results further.
-    ///
-    /// # Returns
-    /// - `(Vec<String>, Vec<String>)`: A tuple where:
-    ///   - The first element is a vector of filtered directory names.
-    ///   - The second element is a vector of filtered file names.
-    ///
-    /// # Behavior
-    /// - Resets the `selected_file` and `selected_dir` indices to `0`.
-    /// - Converts the search query to lowercase for case-insensitive filtering.
-    /// - Depending on the search query:
-    ///   - If the query starts with `?`, deep search logic is applied:
-    ///     - The query is split into multiple sub-queries using whitespace, with the first query acting
-    ///       as the base search.
-    ///     - Caches results from prior searches to minimize unnecessary disk scans.
-    ///     - Applies additional modifiers (if any) to refine the cached results.
-    ///   - If the query does not start with `?`, it performs basic filtering on existing `base_files`
-    ///     and `base_directories`, updating current directories and files accordingly using the provided
-    ///     query modifiers.
-    /// - Updates the following fields based on filtering:
-    ///   - `self.files`: List of matching files.
-    ///   - `self.directories`: List of matching directories.
-    ///   - `self.sub_directories` and `self.sub_files`: Sub-items filtered based on the provided query.
-    /// - Clears `self.deep_search_cache` if deep search is not used.
-    ///
-    /// # Examples
-    ///
-    /// ## Case 1: Basic search without modifiers
-    /// ```rust,ignore
-    /// let query = "example".to_string();
-    /// let (dirs, files) = instance.filter(query);
-    /// ```
-    /// Matches all files and directories containing the substring `"example"`.
-    ///
-    /// ## Case 2: Search with modifiers
-    /// ```rust,ignore
-    /// let query = "^start".to_string();
-    /// let (dirs, files) = instance.filter(query);
-    /// ```
-    /// Matches all files and directories starting with `"start"`.
-    ///
-    /// ## Case 3: Deep search with query refinement
-    /// ```rust,ignore
-    /// let query = "?primary ^subquery".to_string();
-    /// let (dirs, files) = instance.filter(query);
-    /// ```
-    /// Performs a deep search with `"primary"` as the base query and refines the results with
-    /// the additional modifier `^subquery`.
-    ///
-    /// # Notes
-    /// - Deep search uses recursion (`deep_search_recursive`) and a cache for optimization.
-    /// - Uses case-insensitive string matching for all queries and refinements.
-    ///
-    /// # Caveats
-    /// - The method assumes `self.base_files`, `self.base_directories`, `self.base_sub_directories`,
-    ///   and `self.base_sub_files` are populated before invocation and accessible for filtering.
-    /// - Potential performance impact if disk scans via `deep_search_recursive` are required for
-    ///   extensive searches in large directories.
+    /// Filters names case-insensitively. Combine `^prefix`, `$suffix`, `*text`,
+    /// `#extension`, `@f` (files) and `@d` (directories) with spaces.
+    /// Without modifiers, the whole query is matched as a substring.
     pub fn filter(&mut self, research: String) {
-        let research_lower = research.to_ascii_lowercase();
-        let matcher = |item_name: &String| -> bool {
-            let item_lower = item_name.to_lowercase();
-            item_lower.contains(&research_lower)
-                || item_lower.eq(&research_lower)
-                || item_lower.starts_with(&research_lower)
-                || item_lower.ends_with(&research_lower)
+        let query = research.to_lowercase();
+        let tokens: Vec<&str> = query.split_whitespace().collect();
+        let special = tokens
+            .iter()
+            .any(|token| matches!(*token, "@f" | "@d") || token.starts_with(['^', '$', '*', '#']));
+        let matcher = |item: &String, is_file: bool| -> bool {
+            let path = Path::new(item);
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_lowercase();
+            if !special {
+                return name.contains(&query);
+            }
+            tokens.iter().all(|token| match *token {
+                "@f" => is_file,
+                "@d" => !is_file,
+                _ => match token.chars().next() {
+                    Some('^') => name.starts_with(&token[1..]),
+                    Some('$') => name.ends_with(&token[1..]),
+                    Some('*') => name.contains(&token[1..]),
+                    Some('#') => {
+                        is_file
+                            && (token.len() == 1
+                                || path.extension().is_some_and(|ext| {
+                                    ext.to_string_lossy().to_lowercase() == token[1..]
+                                }))
+                    }
+                    _ => name.contains(token),
+                },
+            })
         };
-        self.files.retain(|f| matcher(f));
-        self.directories.retain(|d| matcher(d));
+        self.files = self
+            .base_files
+            .iter()
+            .filter(|f| matcher(f, true))
+            .cloned()
+            .collect();
+        self.directories = self
+            .base_directories
+            .iter()
+            .filter(|d| matcher(d, false))
+            .cloned()
+            .collect();
+        self.sub_files = self
+            .base_sub_files
+            .iter()
+            .filter(|f| matcher(f, true))
+            .cloned()
+            .collect();
+        self.sub_directories = self
+            .base_sub_directories
+            .iter()
+            .filter(|d| matcher(d, false))
+            .cloned()
+            .collect();
+        self.selected_file = 0;
+        self.selected_dir = 0;
+        self.selected_sub_file = 0;
+        self.selected_sub_dir = 0;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finder_filters_combine_and_restore_results() {
+        let dir = tempfile::tempdir().unwrap();
+        for file in [
+            "main.rs",
+            "main_test.RS",
+            "other.rs",
+            "main.txt",
+            "mon fichier.txt",
+        ] {
+            std::fs::write(dir.path().join(file), "").unwrap();
+        }
+        std::fs::create_dir(dir.path().join("main_dir")).unwrap();
+        std::fs::write(dir.path().join("main_dir").join("main_sub.rs"), "").unwrap();
+        std::fs::create_dir(dir.path().join("main_dir").join("main_nested")).unwrap();
+        let mut finder = Finder::new(dir.path(), FinderLayout::SideBySide);
+        let names = |files: &[String]| -> Vec<String> {
+            files
+                .iter()
+                .map(|f| {
+                    Path::new(f)
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect()
+        };
+        finder.filter("@f #rs ^main".into());
+        let mut files = names(&finder.files);
+        files.sort();
+        assert_eq!(files, ["main.rs", "main_test.RS"]);
+        assert!(finder.directories.is_empty());
+        assert_eq!(names(&finder.sub_files), ["main_sub.rs"]);
+        assert!(finder.sub_directories.is_empty());
+        finder.filter("@d ^main".into());
+        assert_eq!(finder.directories, ["main_dir"]);
+        assert!(finder.files.is_empty() && finder.sub_files.is_empty());
+        assert_eq!(names(&finder.sub_directories), ["main_nested"]);
+        finder.filter("$txt".into());
+        assert_eq!(finder.files.len(), 2);
+        finder.filter("*test".into());
+        assert_eq!(names(&finder.files), ["main_test.RS"]);
+        finder.filter("mon fichier".into());
+        assert_eq!(names(&finder.files), ["mon fichier.txt"]);
+        finder.filter("missing".into());
+        assert!(finder.files.is_empty());
+        finder.selected_file = 99;
+        finder.filter("#rs".into());
+        assert_eq!(finder.files.len(), 3);
+        assert_eq!(finder.selected_file, 0);
+        finder.filter(String::new());
+        assert_eq!(finder.files.len(), 5);
+        assert_eq!(finder.directories, ["main_dir"]);
+    }
 
     #[test]
     fn test_mosaic_finder_drawing_standard() {

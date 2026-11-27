@@ -161,16 +161,25 @@ default; the editor syntax colors use a VS Code Dark+ inspired palette. The
 server receives the current unsaved buffer; Rust project analysis may run
 project build tooling.
 
-Files must contain valid UTF-8. Saving preserves existing line endings and
-refuses to overwrite a file whose contents changed since it was opened or last
-saved. Writes use a temporary file in the same directory and replace the
-original only after writing succeeds. The check is not a lock against another
-process writing at the same instant. File permissions are retained, but other
-metadata such as ACLs and extended attributes may not be. Files with multiple
-hard links are not replaced. `:w <path>` creates a new file without overwriting
-an existing one. In Normal mode, `:q` quits if all buffers are saved; `:wq`
-saves the active file and quits only if no other buffers have unsaved changes.
-Use `:q!` to discard unsaved changes.
+Saving Rust, C/C++, and D files formats the buffer first with `rustfmt`,
+`clang-format`, and `dfmt`, respectively. Install the matching formatter and
+keep it on `PATH`; formatter configuration files are respected. If formatting
+fails, qwx reports the error and does not save. Formatting is one undoable
+edit.
+
+Editable files must contain valid UTF-8 and no NUL bytes. When opening a
+directory, non-text files are skipped and reported on stderr rather than shown
+as an editor error. Explicitly opening one reports an error in the status bar.
+Saving preserves the dominant existing line
+ending style and refuses to overwrite a file whose contents changed since it
+was opened or last saved. Writes use a temporary file in the same directory
+and replace the original only after writing succeeds. The check is not a lock
+against another process writing at the same instant. File permissions are
+retained, but other metadata such as ACLs and extended attributes may not be.
+Files with multiple hard links are not replaced. `:w <path>` creates a new
+file without overwriting an existing one. In Normal mode, `:q` quits if all
+buffers are saved; `:wq` saves the active file and quits only if no other
+buffers have unsaved changes. Use `:q!` to discard unsaved changes.
 
 | Shortcut    | Action               | Description                                                                                              |
 |:------------|:---------------------|:---------------------------------------------------------------------------------------------------------|
@@ -197,7 +206,7 @@ text manipulations without entering insert mode.
 |:--------------------------------|:-----------------------|:----------------------------------------------------------------------------------|
 | `e`                             | **Enter Editor**       | Switches to Editor mode at the current cursor position.                           |
 | `o`                             | **Append New Line**    | Jumps to the end of the current line, inserts a new line, and enters Editor mode. |
-| `h`, `j`, `k`, `l`              | **Move Cursor**        | Moves the cursor Left (`h`), Down (`j`), Up (`k`), or Right (`l`).                |
+| `h`, `j`, `k`, `l`              | **Move Cursor**        | Moves the cursor Left (`h`), Up (`j`), Down (`k`), or Right (`l`).                |
 | `Home` / `End`                  | **Line Boundary**      | Moves to the start / end of the current line, unless assigned another action.     |
 | `PageUp` / `PageDn`             | **Fast Scroll**        | Jumps 15 lines up or down for rapid vertical navigation through the file.         |
 | `u`                             | **Undo**               | Reverts the last edit operation.                                                  |
@@ -211,6 +220,7 @@ text manipulations without entering insert mode.
 | `d`                             | **Delete Selection**   | Instantly deletes the currently highlighted selection.                            |
 | `Esc`                           | **Clear Selection**    | Drops the current text selection.                                                 |
 | `Ctrl + h, j, k, l`             | **Shift Focus**        | Shifts the active workspace focus to the Left, Bottom, Top, or Right panel.       |
+| `Alt + z`                       | **Zen**                | Toggle a centered view of the active panel, also available in Editor mode.      |
 | `Ctrl + r`                      | **Rotate Clockwise**   | Rotates the physical views of the panels in a clockwise direction.                |
 | `Alt + r`                       | **Rotate Counter**     | Rotates the physical views of the panels in a counter-clockwise direction.        |
 | `Alt + f`                       | **Finder Mode**        | Opens the file finder overlay to navigate the project directory.                  |
@@ -219,6 +229,40 @@ text manipulations without entering insert mode.
 | `s`, `Alt + s, w`               | **Search Hub Mode**    | Opens the global Search Hub & DevSecOps security audit suite.                     |
 | `Alt + p`, `:player`            | **Player Mode**        | Opens the local music player.                                                      |
 | `q`                             | **Quit**               | Terminates the qwx environment.                                                   |
+
+Zen hides the other panels without closing them. In Normal mode, use
+`Ctrl + h/j/k/l` to select a neighboring panel; press `Alt + z` again to
+restore the previous grid (or portrait layout). The editor and search remain
+usable in zen; return to Normal mode with `Esc` before changing panels.
+The `toggle_zen` key is configurable and defaults to `A-z`, leaving
+`Ctrl + z` available for undo in Editor mode.
+
+The global bottom status bar uses a dark XWQ-inspired theme. It shows the
+current mode, active file, modified marker and cursor line, with search
+results, errors or contextual shortcuts on the right. It remains visible in
+zen, Finder, Search Hub and Player modes.
+Buffer searches are entered in this bar, leaving the file content unobstructed;
+long queries scroll to keep the most recently typed characters visible.
+The local time is shown as `HH:MM` when the bar has room and updates while idle.
+
+### Finder filters
+
+Type in the Finder to filter names case-insensitively. Plain text matches a
+substring, including spaces. Special filters can be combined with spaces:
+
+| Filter | Meaning | Example |
+|:-------|:--------|:--------|
+| `#` | File extension, without the dot | `#rs` |
+| `^` | Name starts with | `^main` |
+| `$` | Name ends with | `$test.rs` |
+| `*` | Name contains | `*test` |
+| `@f` | Files only | `@f` |
+| `@d` | Directories only | `@d` |
+
+For example, `@f #rs ^main` shows Rust files whose names start with `main`.
+Filters apply to the Finder's existing current-directory and child listings,
+not a recursive search. Backspace restores matches; `F5` clears and reloads.
+With combined filters, spaces separate terms.
 
 ### Search Hub & DevSecOps Mode Shortcuts
 

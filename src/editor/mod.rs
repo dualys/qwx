@@ -17,7 +17,8 @@ impl BlockDevice for MockDevice {
 static MOCK_DEVICE: MockDevice = MockDevice;
 
 use crossterm::cursor::{
-    Hide, MoveDown, MoveLeft, MoveRight, MoveTo, MoveUp, SetCursorStyle, Show,
+    Hide, MoveDown, MoveLeft, MoveRight, MoveTo, MoveUp, RestorePosition, SavePosition,
+    SetCursorStyle, Show,
 };
 use crossterm::event::{Event, KeyCode, KeyModifiers, poll, read};
 use crossterm::style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor};
@@ -43,6 +44,7 @@ use tree_sitter_highlight::HighlightConfiguration;
 use unicode_width::UnicodeWidthChar;
 
 mod completion;
+mod format;
 pub mod theme;
 
 /// Represents the initial state of a `PaneState` in the application.
@@ -68,6 +70,7 @@ pub const INIT_PANE_STATE: PaneState = PaneState {
     view: 1,
     cursor: 0,
     cursor_col: 0,
+    cursor_line: 0,
     facet: Facet::Front,
 };
 pub const INIT_NODE_STATE: [Node; 4] = [
@@ -286,6 +289,7 @@ impl<W: Write> QwxUi<W> for Qwx {
                 self.config.keys.edit, self.config.keys.edit_new_line
             ),
             format!(" Finder     : {}", self.config.keys.open_finder),
+            format!(" Zen        : {}", self.config.keys.toggle_zen),
             format!(" Menu       : {}", self.config.keys.open_menu),
             format!(" Sauvegarder: {}", self.config.keys.save_document),
             format!(" Quitter    : {}", self.config.keys.quit),
@@ -306,7 +310,9 @@ impl<W: Write> QwxUi<W> for Qwx {
     fn draw_normal(&mut self, w: &mut W) -> Result<(), Error> {
         self.base(w)?;
         queue!(w, Show, SetCursorStyle::BlinkingUnderScore)?;
-        let (start_x, start_y, p_width, p_height) = if self.is_portrait {
+        let (start_x, start_y, p_width, p_height) = if self.zen {
+            self.zen_bounds()
+        } else if self.is_portrait {
             (
                 1,
                 1,
@@ -376,12 +382,14 @@ impl<W: Write> QwxUi<W> for Qwx {
             left_x,
             0,
             max_width,
-            self.height,
-        )
+            self.height.saturating_sub(1),
+        )?;
+        self.draw_status_bar(w)?;
+        w.flush()
     }
     fn draw_player(&mut self, w: &mut W) -> Result<(), Error> {
         if let Some(player) = &mut self.player {
-            player.draw_local_player(w, self.width, self.height)
+            player.draw_local_player(w, self.width, self.height.saturating_sub(1))?;
         } else {
             let message = self
                 .player_error
@@ -395,17 +403,23 @@ impl<W: Write> QwxUi<W> for Qwx {
                 MoveTo(0, 1),
                 Print("Press q or Esc to return to the editor")
             )?;
-            w.flush()
         }
+        self.draw_status_bar(w)?;
+        w.flush()
     }
     fn draw_web(&mut self, w: &mut W) -> Result<(), Error> {
-        self.search_hub.draw(w, 0, 0, self.width, self.height)?;
-        Ok(())
+        self.search_hub
+            .draw(w, 0, 0, self.width, self.height.saturating_sub(1))?;
+        self.draw_status_bar(w)?;
+        w.flush()
     }
 
     fn draw_menu(&mut self, w: &mut W) -> Result<(), Error> {
         self.base(w)?;
-        let (start_x, start_y, pane_width) = if self.is_portrait {
+        let (start_x, start_y, pane_width) = if self.zen {
+            let (x, y, width, _) = self.zen_bounds();
+            (x, y, width)
+        } else if self.is_portrait {
             (1, 1, self.width.saturating_sub(2))
         } else {
             let max_width = 180.min(self.width);
@@ -439,7 +453,9 @@ impl<W: Write> QwxUi<W> for Qwx {
         self.base(w)?;
         queue!(w, Show, SetCursorStyle::SteadyBlock)?;
 
-        let (start_x, start_y, p_width, p_height) = if self.is_portrait {
+        let (start_x, start_y, p_width, p_height) = if self.zen {
+            self.zen_bounds()
+        } else if self.is_portrait {
             (
                 1,
                 1,
@@ -499,42 +515,7 @@ impl<W: Write> QwxUi<W> for Qwx {
     }
 
     fn draw_search(&mut self, w: &mut W) -> Result<(), Error> {
-        // 1. On dessine l'interface de base (les panneaux, le texte, etc.)
-        self.base(w)?;
-
-        let (start_x, start_y, pane_width) = if self.is_portrait {
-            (1, 1, self.width.saturating_sub(2))
-        } else {
-            let max_width = 180.min(self.width);
-            let left_x = (self.width.saturating_sub(max_width)) / 2;
-            let right_x = left_x + max_width.saturating_sub(1);
-            let mid_x = left_x + (max_width / 2);
-            let top_y = 0;
-            let mid_y = self.height / 2;
-            match self.focus {
-                PaneFocus::TopLeft => (left_x, top_y + 1, mid_x - left_x),
-                PaneFocus::TopRight => (mid_x + 1, top_y + 1, right_x - mid_x),
-                PaneFocus::BottomLeft => (left_x, mid_y + 1, mid_x - left_x),
-                PaneFocus::BottomRight => (mid_x + 1, mid_y + 1, right_x - mid_x),
-            }
-        };
-
-        // Formater la barre de recherche avec le préfixe '/'
-        let prompt = format!(" /{} ", self.search_input);
-        let padded_prompt = format!("{:<width$}", prompt, width = pane_width as usize);
-
-        // Afficher la barre de recherche avec les couleurs de ton thème
-        queue!(
-            w,
-            MoveTo(start_x, start_y),
-            SetBackgroundColor(UI_DMENU_BG),
-            SetForegroundColor(UI_DMENU_FG),
-            Print(padded_prompt),
-            ResetColor
-        )?;
-
-        w.flush()?;
-        Ok(())
+        self.base(w)
     }
     fn reset(&mut self, w: &mut W) -> Result<(), Error> {
         queue!(w, Clear(ClearType::All), Hide, ResetColor)?;
@@ -542,7 +523,10 @@ impl<W: Write> QwxUi<W> for Qwx {
     }
 
     fn base(&mut self, w: &mut W) -> Result<(), Error> {
-        let panes_bounds: Vec<(PaneFocus, u16, u16, u16, u16)> = if self.is_portrait {
+        let panes_bounds: Vec<(PaneFocus, u16, u16, u16, u16)> = if self.zen {
+            let (x, y, width, height) = self.zen_bounds();
+            vec![(self.focus, x, y, width, height)]
+        } else if self.is_portrait {
             // Portrait: only the focused panel, fullscreen
             let p_width = self.width.saturating_sub(2);
             let p_height = self.height.saturating_sub(2);
@@ -623,8 +607,8 @@ impl<W: Write> QwxUi<W> for Qwx {
                     };
 
                 let search_term = if is_active {
-                    if self.mode == Mode::Search && !self.search_input.is_empty() {
-                        Some(self.search_input.as_str())
+                    if self.mode == Mode::Search {
+                        (!self.search_input.is_empty()).then_some(self.search_input.as_str())
                     } else {
                         self.last_search_query.as_deref()
                     }
@@ -632,7 +616,7 @@ impl<W: Write> QwxUi<W> for Qwx {
                     None
                 };
 
-                let _ = self.preview(
+                self.preview(
                     w,
                     node,
                     start_x,
@@ -642,7 +626,7 @@ impl<W: Write> QwxUi<W> for Qwx {
                     pane.cursor as usize,
                     selection,
                     search_term,
-                );
+                )?;
 
                 let name = if node.is_dirty || (is_active && self.editor.is_dirty) {
                     format!(" {}{}", node.name, "*")
@@ -685,20 +669,7 @@ impl<W: Write> QwxUi<W> for Qwx {
                 )?;
             }
         }
-        if let Some(message) = &self.status_message {
-            let text: String = message
-                .chars()
-                .take(self.width.saturating_sub(1) as usize)
-                .collect();
-            queue!(
-                w,
-                MoveTo(0, self.height.saturating_sub(1)),
-                SetForegroundColor(Color::Red),
-                Clear(ClearType::CurrentLine),
-                Print(text),
-                ResetColor
-            )?;
-        }
+        self.draw_status_bar(w)?;
         w.flush()?;
         Ok(())
     }
@@ -891,11 +862,12 @@ impl QwxPanel for Qwx {
 
             // 3. On restaure les coordonnées exactes gardées en mémoire
             let total_lines = ed.rope.len_lines();
-            let safe_line = (pane.cursor as usize).min(total_lines.saturating_sub(1));
+            let safe_line = pane.cursor_line.min(total_lines.saturating_sub(1));
             ed.cursor_line = safe_line;
 
-            let line_len_chars = ed.safe_line(safe_line).len_chars();
-            let safe_col = (pane.cursor_col as usize).min(line_len_chars.saturating_sub(1));
+            let line = ed.safe_line(safe_line).to_string();
+            let line_len_chars = line.trim_end_matches(['\r', '\n']).chars().count();
+            let safe_col = (pane.cursor_col as usize).min(line_len_chars);
             ed.cursor_col = safe_col;
 
             ed.undo_stack = node.undo_stack.clone();
@@ -1120,6 +1092,7 @@ pub struct Qwx {
     focus: PaneFocus,
     panes: [PaneState; 4],
     mode: Mode,
+    zen: bool,
     menu_input: String,
     status_message: Option<String>,
     editor: Ji,
@@ -1351,6 +1324,7 @@ pub struct PaneState {
     pub view: u8,
     pub cursor: u16,
     pub cursor_col: u16,
+    pub cursor_line: usize,
 }
 
 /// An enumeration representing the different operational modes of an application.
@@ -1632,6 +1606,280 @@ impl<W: Write> QwxRenderer<W> for Qwx {
 }
 
 impl Qwx {
+    fn draw_status_bar<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        if self.width == 0 || self.height == 0 {
+            return Ok(());
+        }
+        let mode = match self.mode {
+            Mode::Normal => "NORMAL",
+            Mode::Editor => "EDITOR",
+            Mode::Menu => "MENU",
+            Mode::Finder => "FINDER",
+            Mode::Search | Mode::Occurences => "SEARCH",
+            Mode::WebSearch => "WEB",
+            Mode::Player => "PLAYER",
+            Mode::Help => "HELP",
+            Mode::Zen => "ZEN",
+            Mode::Fusion => "FUSION",
+            Mode::Rescue => "RESCUE",
+            Mode::Broadcast => "BROADCAST",
+            Mode::Ephemeral => "EPHEMERAL",
+        };
+        let label = format!("[{mode}{}]", if self.zen { "+ZEN" } else { "" });
+        let query = if self.mode == Mode::Search {
+            Some(self.search_input.as_str())
+        } else if self.mode == Mode::Occurences {
+            self.last_search_query.as_deref()
+        } else {
+            None
+        };
+        let file = self.views.get(self.focus as usize).and_then(|view| {
+            self.nodes
+                .iter()
+                .find(|node| node.id == view.active_node_id && node.is_file)
+        });
+        let detail = if let Some(query) = query {
+            format!("/{query}")
+        } else if let Some(node) = file {
+            format!(
+                "{}{}  ·  line {}/{}",
+                node.name,
+                if self.editor.is_dirty || node.is_dirty {
+                    "*"
+                } else {
+                    ""
+                },
+                self.editor
+                    .cursor_line
+                    .saturating_add(1)
+                    .min(self.editor.rope.len_lines()),
+                self.editor.rope.len_lines()
+            )
+        } else {
+            "No file".to_string()
+        };
+        let (right, error) = if let Some(message) = &self.status_message {
+            (message.clone(), true)
+        } else if let Some(query) = query.filter(|query| !query.is_empty()) {
+            match regex::Regex::new(query) {
+                Ok(re) => {
+                    let text = self.editor.rope.to_string();
+                    let count = re.find_iter(&text).count();
+                    (
+                        if count == 0 {
+                            "No results".into()
+                        } else {
+                            format!("{count} matches")
+                        },
+                        false,
+                    )
+                }
+                Err(_) => ("Invalid regex".into(), true),
+            }
+        } else {
+            let hint = match self.mode {
+                Mode::Normal => format!(
+                    "{} zen · {} finder · {} quit",
+                    self.config.keys.toggle_zen,
+                    self.config.keys.open_finder,
+                    self.config.keys.quit
+                ),
+                Mode::Editor => format!(
+                    "Esc normal · {} zen · Ctrl+s save",
+                    self.config.keys.toggle_zen
+                ),
+                Mode::Search | Mode::Occurences => "Enter search · Esc return".to_string(),
+                Mode::Menu => "Enter run · Esc return".to_string(),
+                Mode::Finder => "Enter open · Esc return".to_string(),
+                Mode::Player => "q/Esc return".to_string(),
+                Mode::WebSearch | Mode::Help => "Esc return".to_string(),
+                _ => String::new(),
+            };
+            (hint, false)
+        };
+        fn clipped(text: &str, max_width: usize) -> (String, usize) {
+            let mut width = 0;
+            let mut result = String::new();
+            for c in text.chars().filter(|c| !c.is_control()) {
+                let char_width = c.width().unwrap_or(0);
+                if width + char_width > max_width {
+                    break;
+                }
+                width += char_width;
+                result.push(c);
+            }
+            (result, width)
+        }
+        let width = self.width as usize;
+        let left_full = format!("{label} {detail}");
+        let (_, label_width) = clipped(&label, width);
+        let (_, full_detail_width) = clipped(&left_full, usize::MAX);
+        let (_, right_full_width) = clipped(&right, usize::MAX);
+        let essential_right = error || query.is_some_and(|query| !query.is_empty());
+        let search_room = if self.mode == Mode::Search {
+            clipped(&self.search_input, 6).1.saturating_add(2)
+        } else {
+            0
+        };
+        let show_clock = width >= label_width.saturating_add(7)
+            && (query.is_some() || width >= full_detail_width.saturating_add(6))
+            && (!essential_right
+                || width
+                    >= label_width
+                        .saturating_add(right_full_width)
+                        .saturating_add(8)
+                        .saturating_add(search_room));
+        let content_width = width.saturating_sub(if show_clock { 6 } else { 0 });
+        let (_, full_left_width) = clipped(&left_full, content_width);
+        let right_width_limit =
+            if !error && self.mode == Mode::Search && !self.search_input.is_empty() {
+                content_width.saturating_sub(label_width.saturating_add(5))
+            } else if error || query.is_some_and(|query| !query.is_empty()) {
+                content_width.saturating_sub(label_width.saturating_add(1))
+            } else {
+                content_width.saturating_sub(full_left_width.saturating_add(1))
+            };
+        let (right, right_width) = clipped(&right, right_width_limit);
+        let left_limit = if right_width == 0 {
+            content_width
+        } else {
+            content_width.saturating_sub(right_width + 1)
+        };
+        let (left, _) = if self.mode == Mode::Search {
+            let prefix = format!("{label} /");
+            let (_, prefix_width) = clipped(&prefix, left_limit);
+            let (_, full_prefix_width) = clipped(&prefix, usize::MAX);
+            if prefix_width == full_prefix_width && left_limit > prefix_width {
+                let available = left_limit - prefix_width;
+                let (head, head_width) = clipped(&self.search_input, available);
+                let visible_chars = self
+                    .search_input
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .count();
+                if head.chars().count() < visible_chars && available > 1 {
+                    let mut tail: Vec<char> = Vec::new();
+                    let mut tail_width = 0;
+                    for c in self.search_input.chars().rev().filter(|c| !c.is_control()) {
+                        let char_width = c.width().unwrap_or(0);
+                        if tail_width + char_width > available - 1 {
+                            break;
+                        }
+                        tail_width += char_width;
+                        tail.push(c);
+                    }
+                    tail.reverse();
+                    (
+                        format!("{prefix}…{}", tail.into_iter().collect::<String>()),
+                        prefix_width + 1 + tail_width,
+                    )
+                } else {
+                    (format!("{prefix}{head}"), prefix_width + head_width)
+                }
+            } else {
+                clipped(&left_full, left_limit)
+            }
+        } else {
+            clipped(&left_full, left_limit)
+        };
+        queue!(
+            w,
+            MoveTo(0, self.height - 1),
+            SetBackgroundColor(Color::Rgb {
+                r: 36,
+                g: 36,
+                b: 36
+            }),
+            SetForegroundColor(Color::Rgb {
+                r: 238,
+                g: 238,
+                b: 238
+            }),
+            Clear(ClearType::CurrentLine),
+            Print(left)
+        )?;
+        if right_width > 0 {
+            queue!(
+                w,
+                MoveTo((content_width - right_width) as u16, self.height - 1),
+                SetForegroundColor(if error {
+                    Color::Red
+                } else {
+                    Color::Rgb {
+                        r: 153,
+                        g: 193,
+                        b: 241,
+                    }
+                }),
+                Print(right)
+            )?;
+        }
+        if show_clock {
+            queue!(
+                w,
+                MoveTo(self.width - 5, self.height - 1),
+                SetForegroundColor(Color::Rgb {
+                    r: 153,
+                    g: 193,
+                    b: 241
+                }),
+                Print(chrono::Local::now().format("%H:%M"))
+            )?;
+        }
+        queue!(w, ResetColor)
+    }
+
+    fn read_event_with_clock<W: Write>(&self, w: &mut W) -> io::Result<Event> {
+        let mut displayed = None;
+        loop {
+            if poll(std::time::Duration::from_secs(1))? {
+                return read();
+            }
+            let now = chrono::Local::now().format("%H:%M").to_string();
+            if displayed.as_ref() != Some(&now) {
+                queue!(w, SavePosition)?;
+                self.draw_status_bar(w)?;
+                queue!(w, RestorePosition)?;
+                w.flush()?;
+                displayed = Some(now);
+            }
+        }
+    }
+
+    fn zen_bounds(&self) -> (u16, u16, u16, u16) {
+        let width = self.width.saturating_sub(2).min(120);
+        (
+            (self.width - width) / 2,
+            1,
+            width,
+            self.height.saturating_sub(2),
+        )
+    }
+
+    fn toggle_zen(&mut self) {
+        self.zen = !self.zen;
+        self.follow();
+    }
+
+    fn focus_panel(&mut self, action: Action) {
+        let target = match (self.focus, action) {
+            (PaneFocus::TopLeft, Action::GoRightPanel) => PaneFocus::TopRight,
+            (PaneFocus::BottomLeft, Action::GoRightPanel) => PaneFocus::BottomRight,
+            (PaneFocus::TopRight, Action::GoLeftPanel) => PaneFocus::TopLeft,
+            (PaneFocus::BottomRight, Action::GoLeftPanel) => PaneFocus::BottomLeft,
+            (PaneFocus::TopLeft, Action::GoBottomPanel) => PaneFocus::BottomLeft,
+            (PaneFocus::TopRight, Action::GoBottomPanel) => PaneFocus::BottomRight,
+            (PaneFocus::BottomLeft, Action::GotTopPanel) => PaneFocus::TopLeft,
+            (PaneFocus::BottomRight, Action::GotTopPanel) => PaneFocus::TopRight,
+            _ => self.focus,
+        };
+        if target != self.focus {
+            self.focus = target;
+            self.load_active_pane_file();
+            self.follow();
+        }
+    }
+
     fn poll_player_loader(&mut self) {
         while let Some(loader) = &self.player_loader {
             match loader.try_recv() {
@@ -1669,6 +1917,22 @@ impl Qwx {
     }
 
     fn save_active(&mut self, path: Option<&Path>) -> bool {
+        let target = path
+            .map(Path::to_path_buf)
+            .or_else(|| self.editor.file_path.clone());
+        if let Some(target) = target {
+            let source = self.editor.rope.to_string();
+            match format::format(&target, &source) {
+                Ok(Some(formatted)) if formatted != source => {
+                    self.editor.replace_formatted(formatted);
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    self.status_message = Some(format!("Format failed: {error}"));
+                    return false;
+                }
+            }
+        }
         let result = match path {
             Some(path) => self.editor.save_as(path),
             None => self.editor.save(),
@@ -1814,16 +2078,18 @@ impl Qwx {
         let total_lines = self.editor.rope.len_lines();
 
         // 2. Calcul des dimensions de l'écran
-        let p_height = if self.width < 130 {
+        let p_height = if self.zen {
+            self.zen_bounds().3.saturating_sub(1) as usize
+        } else if self.is_portrait {
             // Portrait mode: full height
-            self.height.saturating_sub(2) as usize
+            self.height.saturating_sub(3) as usize
         } else {
             let mid_y = self.height / 2;
-            let bottom_y = self.height;
+            let bottom_y = self.height.saturating_sub(1);
             (match self.focus {
-                PaneFocus::TopLeft | PaneFocus::TopRight => mid_y.saturating_sub(1),
+                PaneFocus::TopLeft | PaneFocus::TopRight => mid_y.saturating_sub(2),
                 PaneFocus::BottomLeft | PaneFocus::BottomRight => {
-                    (bottom_y - mid_y).saturating_sub(1)
+                    bottom_y.saturating_sub(mid_y).saturating_sub(2)
                 }
             }) as usize
         };
@@ -1835,7 +2101,7 @@ impl Qwx {
         // 4. Ajuster la cible de scroll selon la position du curseur
         if cursor_line < new_scroll + margin {
             new_scroll = cursor_line.saturating_sub(margin);
-        } else if cursor_line >= new_scroll + p_height - margin {
+        } else if cursor_line >= (new_scroll + p_height).saturating_sub(margin) {
             new_scroll = (cursor_line + margin + 1).saturating_sub(p_height);
         }
 
@@ -1849,16 +2115,28 @@ impl Qwx {
         // 6. Écriture finale
         pane.cursor = new_scroll as u16; // (Gère déjà le défilement vertical)
         pane.cursor_col = cursor_col as u16; // <-- AJOUTE CETTE LIGNE ICI
+        pane.cursor_line = cursor_line;
     }
     pub fn handle_normal<W: Write>(&mut self, w: &mut W) {
         self.reset(w).expect("failed to reset");
 
         loop {
             self.draw_normal(w).expect("failed to draw");
-            let e = read()
+            let e = match self
+                .read_event_with_clock(w)
                 .expect("failed to get terminal input")
-                .as_key_event()
-                .expect("failed to parse key event");
+            {
+                Event::Key(key) => key,
+                Event::Resize(cols, rows) => {
+                    self.width = cols;
+                    self.height = rows;
+                    self.is_portrait = cols < rows.saturating_mul(2);
+                    self.follow();
+                    self.reset(w).expect("failed to reset on resize");
+                    continue;
+                }
+                _ => continue,
+            };
 
             if e.modifiers == KeyModifiers::NONE
                 && !self.keymap.contains_key(&(e.modifiers, e.code))
@@ -1978,37 +2256,18 @@ impl Qwx {
                         self.sync_node_content();
                         self.follow();
                     }
-                    Action::GoRightPanel => {
-                        self.focus = match self.focus {
-                            PaneFocus::TopLeft => PaneFocus::TopRight,
-                            PaneFocus::BottomLeft => PaneFocus::BottomRight,
-                            _ => self.focus,
-                        };
-                        self.load_active_pane_file();
+                    Action::GoRightPanel
+                    | Action::GoLeftPanel
+                    | Action::GoBottomPanel
+                    | Action::GotTopPanel => {
+                        self.focus_panel(*action);
+                        if self.zen || self.is_portrait {
+                            self.reset(w).expect("failed to reset");
+                        }
                     }
-                    Action::GoLeftPanel => {
-                        self.focus = match self.focus {
-                            PaneFocus::TopRight => PaneFocus::TopLeft,
-                            PaneFocus::BottomRight => PaneFocus::BottomLeft,
-                            _ => self.focus,
-                        };
-                        self.load_active_pane_file();
-                    }
-                    Action::GoBottomPanel => {
-                        self.focus = match self.focus {
-                            PaneFocus::TopRight => PaneFocus::BottomRight,
-                            PaneFocus::TopLeft => PaneFocus::BottomLeft,
-                            _ => self.focus,
-                        };
-                        self.load_active_pane_file();
-                    }
-                    Action::GotTopPanel => {
-                        self.focus = match self.focus {
-                            PaneFocus::BottomRight => PaneFocus::TopRight,
-                            PaneFocus::BottomLeft => PaneFocus::TopLeft,
-                            _ => self.focus,
-                        };
-                        self.load_active_pane_file();
+                    Action::ToggleZen => {
+                        self.toggle_zen();
+                        self.reset(w).expect("failed to reset");
                     }
                     Action::GoTop => {
                         self.editor.cursor_line = 1;
@@ -2042,6 +2301,7 @@ impl Qwx {
                     Action::Search => {
                         self.mode = Mode::Search;
                         self.search_input.clear();
+                        self.status_message = None;
                         break;
                     }
                     Action::OpenWeb => {
@@ -2202,7 +2462,7 @@ impl Qwx {
         self.reset(w).expect("failed to reset");
         loop {
             self.draw_menu(w).expect("failed to draw");
-            match read().expect("msg") {
+            match self.read_event_with_clock(w).expect("msg") {
                 Event::Key(key) => match (key.modifiers, key.code) {
                     (KeyModifiers::NONE, KeyCode::Esc) => {
                         self.mode = Mode::Normal;
@@ -2411,7 +2671,6 @@ impl Qwx {
             }
             self.draw_editor(w).expect("failed to draw");
             if !items.is_empty() {
-                use crossterm::cursor::{RestorePosition, SavePosition};
                 let count = items
                     .len()
                     .min(6)
@@ -2472,9 +2731,14 @@ impl Qwx {
             {
                 continue;
             }
-            match read().expect("msg") {
+            match self.read_event_with_clock(w).expect("msg") {
                 Event::Key(key) => {
                     let mut text_changed = false;
+                    if self.keymap.get(&(key.modifiers, key.code)) == Some(&Action::ToggleZen) {
+                        self.toggle_zen();
+                        self.reset(w).expect("failed to reset");
+                        continue;
+                    }
                     if !items.is_empty() {
                         match (key.modifiers, key.code) {
                             (KeyModifiers::NONE, KeyCode::Down | KeyCode::Tab) => {
@@ -2686,6 +2950,8 @@ impl Qwx {
                 Event::Resize(cols, rows) => {
                     self.width = cols;
                     self.height = rows;
+                    self.is_portrait = cols < rows.saturating_mul(2);
+                    self.follow();
                     self.reset(w).expect("failed to reset");
                 }
                 _ => {}
@@ -2697,26 +2963,18 @@ impl Qwx {
         self.reset(w).expect("failed to reset");
         loop {
             self.draw_finder(w).expect("failed to draw");
-            match read().expect("msg") {
+            match self.read_event_with_clock(w).expect("msg") {
                 Event::Key(key) => match (key.modifiers, key.code) {
                     (KeyModifiers::NONE, KeyCode::Esc) => {
                         break;
                     }
                     (KeyModifiers::NONE, KeyCode::Backspace) => {
                         self.finder_research.pop();
-                        if !self.finder_research.is_empty() && !self.finder.files.is_empty() {
-                            self.finder.filter(self.finder_research.clone());
-                            continue;
-                        }
-                        self.finder =
-                            Finder::new(self.current_dir.as_ref(), self.finder_layout.clone());
-                        if !self.finder_research.is_empty() {
-                            self.finder.filter(self.finder_research.clone());
-                        }
+                        self.finder.filter(self.finder_research.clone());
                         continue;
                     }
-                    (KeyModifiers::NONE, KeyCode::Char(c)) => {
-                        if c.is_ascii_alphanumeric() {
+                    (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {
+                        if !c.is_control() {
                             self.finder_research.push(c);
                             self.finder.filter(self.finder_research.clone());
                         }
@@ -2742,6 +3000,7 @@ impl Qwx {
                             }
                             self.finder = Finder::new(z, self.finder_layout.clone());
                             self.current_dir = z.into();
+                            self.finder_research.clear();
                         }
                     }
                     (KeyModifiers::ALT, KeyCode::Char('l')) => {
@@ -2773,14 +3032,16 @@ impl Qwx {
                         if !files.is_empty() && self.finder.selected_file < files.len() {
                             let filename = &files[self.finder.selected_file];
                             let full_path = self.current_dir.join(filename);
+                            let display_name = full_path
+                                .file_name()
+                                .unwrap_or(full_path.as_os_str())
+                                .to_string_lossy();
 
                             let canonical_path = match full_path.canonicalize() {
                                 Ok(path) => path,
                                 Err(error) => {
-                                    self.status_message = Some(format!(
-                                        "Open failed for {}: {error}",
-                                        full_path.display()
-                                    ));
+                                    self.status_message =
+                                        Some(format!("Open failed for {}: {error}", display_name));
                                     break;
                                 }
                             };
@@ -2801,7 +3062,7 @@ impl Qwx {
                                     Err(error) => {
                                         self.status_message = Some(format!(
                                             "Open failed for {}: {error}",
-                                            full_path.display()
+                                            display_name
                                         ));
                                         break;
                                     }
@@ -2822,6 +3083,7 @@ impl Qwx {
                             // 2. On réinitialise la position du curseur
                             self.panes[active_idx].cursor = 0;
                             self.panes[active_idx].cursor_col = 0;
+                            self.panes[active_idx].cursor_line = 0;
                             break;
                         }
                     }
@@ -2830,7 +3092,7 @@ impl Qwx {
                 Event::Resize(cols, rows) => {
                     self.width = cols;
                     self.height = rows;
-                    self.finder.resize(cols, rows);
+                    self.finder.resize(cols, rows.saturating_sub(1));
                     self.reset(w).expect("failed to reset editor");
                 }
                 _ => {}
@@ -2838,6 +3100,7 @@ impl Qwx {
         }
         self.mode = Mode::Normal;
         self.finder_research.clear();
+        self.finder.filter(String::new());
         self.reset(w).expect("failed to reset");
         self.load_active_pane_file();
     }
@@ -2846,7 +3109,7 @@ impl Qwx {
         self.reset(w).expect("failed to reset");
         loop {
             self.draw_normal(w).expect("failed to draw search");
-            match read().expect("msg") {
+            match self.read_event_with_clock(w).expect("msg") {
                 Event::Key(key) => match (key.modifiers, key.code) {
                     (KeyModifiers::NONE, KeyCode::Esc) => {
                         self.mode = Mode::Normal;
@@ -2884,7 +3147,7 @@ impl Qwx {
         self.reset(w).expect("failed to reset editor");
         loop {
             self.draw_search(w).expect("failed to draw search");
-            match read().expect("msg") {
+            match self.read_event_with_clock(w).expect("msg") {
                 Event::Key(key) => match (key.modifiers, key.code) {
                     (KeyModifiers::NONE, KeyCode::Esc) => {
                         self.mode = Mode::Normal;
@@ -2920,7 +3183,7 @@ impl Qwx {
         self.reset(w).expect("failed to reset");
         loop {
             self.draw_web(w).expect("failed to draw web");
-            match read().expect("msg") {
+            match self.read_event_with_clock(w).expect("msg") {
                 Event::Key(key) => {
                     // 1. If Web Reader is currently active inside the Search Hub
                     if self.search_hub.show_web_reader {
@@ -3479,7 +3742,10 @@ impl Qwx {
         self.reset(w).expect("failed to reset");
         loop {
             self.draw_help(w).expect("failed to draw help");
-            match read().expect("failed to read terminal") {
+            match self
+                .read_event_with_clock(w)
+                .expect("failed to read terminal")
+            {
                 Event::Key(key) => match (key.modifiers, key.code) {
                     (KeyModifiers::NONE, KeyCode::Esc)
                     | (KeyModifiers::NONE, KeyCode::Char('q')) => {
@@ -3724,12 +3990,17 @@ impl Qwx {
     pub fn new(path: &Path, open_mode: Mode, c: &QwxConfig) -> Self {
         let (width, height) = size().expect("failed to get size");
         let (dir_path, target_file) = if path.is_file() {
-            (path.parent().unwrap_or_else(|| Path::new(".")), Some(path))
+            (
+                path.parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new(".")),
+                Some(path),
+            )
         } else {
             (path, None)
         };
         let file_list = list_files(dir_path);
-        if file_list.is_empty() {
+        if file_list.is_empty() && target_file.is_none() {
             return Self {
                 config: c.clone(),
                 keymap: build_keymap(c),
@@ -3749,6 +4020,7 @@ impl Qwx {
                 focus: PaneFocus::TopLeft,
                 panes: [INIT_PANE_STATE; 4],
                 mode: Mode::Normal,
+                zen: false,
                 menu_input: String::new(),
                 status_message: None,
                 editor: Ji::default(),
@@ -3770,24 +4042,29 @@ impl Qwx {
         for filename in &file_list {
             let fpath = PathBuf::from(filename);
             let i = nodes.len();
+            let is_target = target_file.is_some_and(|target| {
+                fpath == target || target.canonicalize().is_ok_and(|path| path == fpath)
+            });
             match qwx_load_node(i, fpath.as_path()) {
                 Ok(node) => {
-                    if let Some(target) = target_file {
-                        if let (Ok(p1), Ok(p2)) = (fpath.canonicalize(), target.canonicalize()) {
-                            if p1 == p2 {
-                                target_node_id = Some(i);
-                            }
-                        } else if fpath == target {
-                            target_node_id = Some(i);
-                        }
+                    if is_target {
+                        target_node_id = Some(i);
                     }
                     nodes.push(node);
                     views.push(View { active_node_id: i });
                 }
                 Err(error) => {
-                    if target_file.is_none() || Some(fpath.as_path()) == target_file {
-                        status_message =
-                            Some(format!("Open failed for {}: {error}", fpath.display()));
+                    let non_text = error
+                        .get_ref()
+                        .is_some_and(|cause| cause.is::<NonTextFile>());
+                    if is_target || (target_file.is_none() && !non_text) {
+                        let name = fpath
+                            .file_name()
+                            .unwrap_or(fpath.as_os_str())
+                            .to_string_lossy();
+                        status_message = Some(format!("Open failed for {name}: {error}"));
+                    } else if non_text {
+                        eprintln!("qwx: skipped non-text file {}: {error}", fpath.display());
                     }
                 }
             }
@@ -3797,21 +4074,28 @@ impl Qwx {
             && target_node_id.is_none()
         {
             let id = nodes.len();
-            nodes.push(Node {
-                id,
-                name: target
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned(),
-                is_file: false,
-                ..Node::default()
-            });
+            match qwx_load_node(id, target) {
+                Ok(node) => nodes.push(node),
+                Err(error) => {
+                    let name = target
+                        .file_name()
+                        .unwrap_or(target.as_os_str())
+                        .to_string_lossy();
+                    status_message = Some(format!("Open failed for {name}: {error}"));
+                    nodes.push(Node {
+                        id,
+                        name: target
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned(),
+                        is_file: false,
+                        ..Node::default()
+                    });
+                }
+            }
             views.push(View { active_node_id: id });
             target_node_id = Some(id);
-            if status_message.is_none() {
-                status_message = Some(format!("Open failed for {}", target.display()));
-            }
         }
         let target_node_id = target_node_id.unwrap_or(0);
 
@@ -3848,12 +4132,13 @@ impl Qwx {
             focus: PaneFocus::TopLeft,
             panes,
             mode: open_mode,
+            zen: false,
             menu_input: String::new(),
             status_message,
             nodes: nodes.clone(),
             views,
             finder_layout: FinderLayout::SideBySide,
-            finder: Finder::new(path, FinderLayout::SideBySide),
+            finder: Finder::new(dir_path, FinderLayout::SideBySide),
             finder_research: String::new(),
             editor,
             search_input: String::new(),
@@ -4411,7 +4696,38 @@ pub struct Ji {
     saved_hash: Option<blake3::Hash>,
 }
 
+#[derive(Debug)]
+struct NonTextFile(&'static str);
+
+impl std::fmt::Display for NonTextFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for NonTextFile {}
+
 impl Ji {
+    fn replace_formatted(&mut self, formatted: String) {
+        if self.rope.to_string() == formatted {
+            return;
+        }
+        self.record_undo();
+        self.rope = Rope::from_str(&formatted);
+        self.cursor_line = self
+            .cursor_line
+            .min(self.rope.len_lines().saturating_sub(1));
+        let line = self.safe_line(self.cursor_line);
+        let mut max_col = line.len_chars();
+        while max_col > 0 && matches!(line.char(max_col - 1), '\r' | '\n') {
+            max_col -= 1;
+        }
+        self.cursor_col = self.cursor_col.min(max_col);
+        self.selection = None;
+        self.syntax_tree = None;
+        self.update_syntax_tree();
+    }
+
     fn move_line_boundary(&mut self, key: KeyCode) -> bool {
         self.cursor_col = match key {
             KeyCode::Home => 0,
@@ -4725,8 +5041,15 @@ impl Ji {
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let path_ref = path.as_ref();
         let bytes = std::fs::read(path_ref)?;
-        let text = std::str::from_utf8(&bytes)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let text = std::str::from_utf8(&bytes).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, NonTextFile("file is not UTF-8"))
+        })?;
+        if text.contains('\0') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                NonTextFile("file contains NUL bytes"),
+            ));
+        }
         let rope = Rope::from_str(text);
 
         let theme_keys = vec![
@@ -5057,6 +5380,7 @@ impl Ji {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parse_key;
 
     #[cfg(feature = "tree-sitter-d")]
     #[test]
@@ -5153,6 +5477,7 @@ mod tests {
             focus: PaneFocus::TopLeft,
             panes: [INIT_PANE_STATE; 4],
             mode: Mode::Menu,
+            zen: false,
             menu_input: String::new(),
             status_message: None,
             editor: Ji::open(path).unwrap(),
@@ -5164,6 +5489,206 @@ mod tests {
             player_error: None,
             is_portrait: false,
         }
+    }
+
+    #[test]
+    fn zen_hides_other_panes_and_preserves_edits_and_focus() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first.txt");
+        let second = dir.path().join("second.txt");
+        std::fs::write(&first, "first line\nsecond line\nthird line").unwrap();
+        std::fs::write(&second, "other file\n").unwrap();
+        let mut qwx = command_editor(&first);
+        qwx.width = 160;
+        qwx.height = 24;
+        qwx.mode = Mode::Normal;
+        qwx.nodes.push(qwx_load_node(1, &second).unwrap());
+        qwx.views[1].active_node_id = 1;
+        qwx.spatial_map.insert((0, 1, 1), 0);
+        qwx.spatial_map.insert((1, 1, 1), 1);
+        qwx.editor.cursor_line = 2;
+        qwx.editor.cursor_col = 3;
+        qwx.editor.insert_char('X');
+        qwx.sync_node_content();
+        let hidden = qwx.panes[1];
+        qwx.toggle_zen();
+        assert_eq!(qwx.zen_bounds(), (20, 1, 120, 22));
+        let mut output = Vec::new();
+        qwx.draw_normal(&mut output).unwrap();
+        let rendered = String::from_utf8(output).unwrap();
+        let strip = regex::Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").unwrap();
+        assert!(strip.replace_all(&rendered, "").contains("thiXrd"));
+        assert!(!strip.replace_all(&rendered, "").contains("other file"));
+        assert!(rendered.contains("\x1b[5;25H"));
+
+        qwx.focus_panel(Action::GoRightPanel);
+        assert!(qwx.focus == PaneFocus::TopRight);
+        let mut output = Vec::new();
+        qwx.draw_normal(&mut output).unwrap();
+        let rendered = String::from_utf8(output).unwrap();
+        assert!(strip.replace_all(&rendered, "").contains("other file"));
+        assert!(!strip.replace_all(&rendered, "").contains("thiXrd"));
+        qwx.focus_panel(Action::GoLeftPanel);
+        assert!(qwx.focus == PaneFocus::TopLeft);
+        assert_eq!((qwx.editor.cursor_line, qwx.editor.cursor_col), (2, 4));
+        assert!(qwx.editor.rope.to_string().contains("thiXrd"));
+        assert!(qwx.editor.is_dirty);
+        qwx.editor.undo();
+        assert!(qwx.editor.rope.to_string().contains("third"));
+        qwx.sync_node_content();
+        qwx.toggle_zen();
+        assert!(!qwx.zen);
+        assert!(qwx.panes[1] == hidden);
+        let mut output = Vec::new();
+        qwx.draw_normal(&mut output).unwrap();
+        let rendered = String::from_utf8(output).unwrap();
+        let text = strip.replace_all(&rendered, "");
+        assert!(text.contains("third") && text.contains("other file"));
+    }
+
+    #[test]
+    fn zen_uses_full_height_and_respects_portrait_and_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lines.txt");
+        std::fs::write(
+            &path,
+            (0..100).map(|i| format!("line {i}\n")).collect::<String>(),
+        )
+        .unwrap();
+        let mut qwx = command_editor(&path);
+        qwx.mode = Mode::Editor;
+        qwx.width = 200;
+        qwx.height = 40;
+        qwx.editor.cursor_line = 30;
+        qwx.follow();
+        qwx.toggle_zen();
+        let mut output = Vec::new();
+        qwx.draw_editor(&mut output).unwrap();
+        assert!(!String::from_utf8(output).unwrap().contains("\x1b[?25l"));
+        qwx.width = 30;
+        qwx.height = 60;
+        qwx.is_portrait = true;
+        qwx.follow();
+        assert_eq!(qwx.zen_bounds(), (1, 1, 28, 58));
+        qwx.toggle_zen();
+        assert!(qwx.is_portrait);
+        let mut config = QwxConfig::default();
+        assert_eq!(
+            build_keymap(&config).get(&parse_key("A-z")),
+            Some(&Action::ToggleZen)
+        );
+        config.keys.toggle_zen = "F-5".into();
+        assert_eq!(
+            build_keymap(&config).get(&parse_key("F-5")),
+            Some(&Action::ToggleZen)
+        );
+        let parsed: QwxConfig = toml::from_str("[keys]\n").unwrap();
+        assert_eq!(parsed.keys.toggle_zen, "A-z");
+    }
+
+    #[test]
+    fn status_bar_reports_mode_file_search_and_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.txt");
+        std::fs::write(&path, "alpha alpha\nbeta").unwrap();
+        let mut qwx = command_editor(&path);
+        qwx.width = 100;
+        qwx.height = 24;
+        qwx.mode = Mode::Normal;
+        let mut output = Vec::new();
+        qwx.draw_status_bar(&mut output).unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.contains("\x1b[24;1H"));
+        assert!(text.contains("\x1b[48;2;36;36;36m"));
+        assert!(text.contains("\x1b[38;2;238;238;238m"));
+        assert!(text.contains("\x1b[38;2;153;193;241m"));
+        assert!(text.contains("[NORMAL] notes.txt"));
+        assert!(text.contains("line 1/2"));
+        assert!(
+            regex::Regex::new(r"\x1b\[24;96H\x1b\[38;2;153;193;241m\d{2}:\d{2}")
+                .unwrap()
+                .is_match(&text)
+        );
+        qwx.mode = Mode::Search;
+        qwx.zen = true;
+        qwx.search_input = "alpha".into();
+        let mut output = Vec::new();
+        qwx.draw_status_bar(&mut output).unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.contains("[SEARCH+ZEN] /alpha"));
+        assert!(text.contains("2 matches"));
+        qwx.width = 32;
+        qwx.search_input = "alpha|a_very_long_search_query".into();
+        let mut output = Vec::new();
+        qwx.draw_status_bar(&mut output).unwrap();
+        assert!(String::from_utf8(output).unwrap().contains("2 matches"));
+        qwx.width = 100;
+        qwx.search_input = "[".into();
+        let mut output = Vec::new();
+        qwx.draw_status_bar(&mut output).unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.contains("Invalid regex"));
+        assert!(text.contains("\x1b[38;5;9m"));
+        qwx.width = 24;
+        qwx.status_message = Some("Save failed: disk full".into());
+        let mut output = Vec::new();
+        qwx.draw_status_bar(&mut output).unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.contains("Save failed"));
+        qwx.width = 0;
+        let mut output = Vec::new();
+        qwx.draw_status_bar(&mut output).unwrap();
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn status_bar_handles_unicode_and_secondary_modes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("écran界.txt");
+        std::fs::write(&path, "text").unwrap();
+        let mut qwx = command_editor(&path);
+        qwx.width = 20;
+        qwx.height = 24;
+        qwx.mode = Mode::Finder;
+        let mut output = Vec::new();
+        qwx.draw_status_bar(&mut output).unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.contains("[FINDER] écran界"));
+        qwx.mode = Mode::Player;
+        let mut output = Vec::new();
+        qwx.draw_status_bar(&mut output).unwrap();
+        assert!(String::from_utf8(output).unwrap().contains("[PLAYER]"));
+    }
+
+    #[test]
+    fn search_keeps_file_visible_and_shows_the_end_of_long_queries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.txt");
+        std::fs::write(&path, "first line\nsecond line").unwrap();
+        let mut qwx = command_editor(&path);
+        qwx.width = 32;
+        qwx.height = 24;
+        qwx.zen = true;
+        qwx.mode = Mode::Search;
+        qwx.search_input = "long_search_pattern_界fin".into();
+        let mut output = Vec::new();
+        qwx.draw_search(&mut output).unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.contains("…"));
+        assert!(text.contains("界fin"));
+        assert!(text.contains("No results"));
+        assert!(!text.contains("\x1b[48;2;0;255;0m"));
+        let mut base_output = Vec::new();
+        qwx.base(&mut base_output).unwrap();
+        assert_eq!(text.as_bytes(), base_output);
+
+        qwx.mode = Mode::Menu;
+        qwx.menu_input = ":w".into();
+        let mut output = Vec::new();
+        qwx.draw_menu(&mut output).unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.contains(":w"));
+        assert!(!text.contains("\x1b[48;2;0;255;0m"));
     }
 
     #[test]
@@ -5270,6 +5795,30 @@ mod tests {
         );
         assert!(qwx_load_node(0, &path).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"first\n\xff\nlast");
+    }
+
+    #[test]
+    fn binary_data_is_distinguished_from_io_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("binary");
+        for bytes in [&b"\xff"[..], &b"ascii\0binary"[..]] {
+            std::fs::write(&path, bytes).unwrap();
+            let error = qwx_load_node(0, &path).err().unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert!(
+                error
+                    .get_ref()
+                    .is_some_and(|cause| cause.is::<NonTextFile>())
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        let error = qwx_load_node(0, &dir.path().join("missing")).err().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(
+            !error
+                .get_ref()
+                .is_some_and(|cause| cause.is::<NonTextFile>())
+        );
     }
 
     #[test]

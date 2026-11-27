@@ -17,6 +17,7 @@ strip = true        # On garde ça pour virer les symboles de debug
 [dependencies]
 clap = "4.6.7"
 clap_complete = "4.6.11"
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 crossterm = "0.29.0"
 dirs = "7.0.0"
 rodio = "0.20"

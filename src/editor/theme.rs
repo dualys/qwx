@@ -81,9 +81,16 @@ pub const UI_TEXT_MUTED: Color = Color::Rgb {
     b: 120,
 };
 
-// Pour la barre Menu : un fond sombre et un texte clair, fini le vert fluo !
-pub const UI_DMENU_BG: Color = Color::Rgb { r: 0, g: 255, b: 0 };
-pub const UI_DMENU_FG: Color = Color::Rgb { r: 0, g: 0, b: 0 };
+pub const UI_DMENU_BG: Color = Color::Rgb {
+    r: 36,
+    g: 36,
+    b: 36,
+};
+pub const UI_DMENU_FG: Color = Color::Rgb {
+    r: 238,
+    g: 238,
+    b: 238,
+};
 
 pub fn get_color_for_capture(capture_name: &str) -> Color {
     match capture_name {

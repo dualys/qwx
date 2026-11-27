@@ -104,6 +104,7 @@ pub fn build_keymap(config: &QwxConfig) -> KeyMap {
     map.insert(parse_key(&config.keys.search), Action::Search);
     map.insert(parse_key(&config.keys.open_web), Action::OpenWeb);
     map.insert(parse_key(&config.keys.open_player), Action::OpenPlayer);
+    map.insert(parse_key(&config.keys.toggle_zen), Action::ToggleZen);
     map.insert(parse_key(&config.keys.quit), Action::Quit);
     map.insert(
         parse_key(&config.keys.rotate_clockwise),
@@ -163,6 +164,7 @@ pub enum Action {
     OpenMenu,
     OpenWeb,
     OpenPlayer,
+    ToggleZen,
     Search,
     Quit,
     SaveDocument,
@@ -207,6 +209,7 @@ pub struct QwxKeysConfig {
     pub search: String,
     pub open_web: String,
     pub open_player: String,
+    pub toggle_zen: String,
     pub quit: String,
     pub rotate_clockwise: String,
     pub rotate_counter_clockwise: String,
@@ -224,10 +227,10 @@ impl Default for QwxKeysConfig {
             increase_workspace: String::from("A-l"),
             pageup: String::from("pageup"),
             pagedown: String::from("pagedown"),
-            move_down: String::from("j"),
+            move_down: String::from("k"),
             move_left: String::from("h"),
             move_right: String::from("l"),
-            move_up: String::from("k"),
+            move_up: String::from("j"),
             select_line: String::from("x"),
             redo: String::from("r"),
             undo: String::from("u"),
@@ -249,6 +252,7 @@ impl Default for QwxKeysConfig {
             search: String::from("/"),
             open_web: String::from("A-w"),
             open_player: String::from("A-p"),
+            toggle_zen: String::from("A-z"),
             quit: String::from("q"),
             rotate_clockwise: String::from("C-r"),
             rotate_counter_clockwise: String::from("A-r"),
@@ -262,4 +266,22 @@ impl Default for QwxKeysConfig {
 #[derive(Deserialize, Serialize, Clone, Default)]
 pub struct QwxConfig {
     pub keys: QwxKeysConfig,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_vertical_navigation_uses_k_down_and_j_up() {
+        let keymap = build_keymap(&QwxConfig::default());
+        assert_eq!(
+            keymap.get(&(KeyModifiers::NONE, KeyCode::Char('k'))),
+            Some(&Action::MoveDown)
+        );
+        assert_eq!(
+            keymap.get(&(KeyModifiers::NONE, KeyCode::Char('j'))),
+            Some(&Action::MoveUp)
+        );
+    }
 }
