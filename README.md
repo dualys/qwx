@@ -160,6 +160,12 @@ Install `serve-d` for D completion. D syntax highlighting is enabled by
 default; the editor syntax colors use a VS Code Dark+ inspired palette. The
 server receives the current unsaved buffer; Rust project analysis may run
 project build tooling.
+With the CMake syntax feature enabled (as in `make`), both `CMakeLists.txt`
+and `.cmake` files receive syntax highlighting.
+The `make` build also enables highlighting for Ruby (`.rb`, `.rake`,
+`.gemspec`, `.ru`, `Gemfile` and `Rakefile`), CSS, SCSS, JavaScript/JSX,
+TypeScript/TSX, SQL and TOML. ERB templates and indented `.sass` syntax are
+not covered by these grammars.
 
 Saving Rust, C/C++, and D files formats the buffer first with `rustfmt`,
 `clang-format`, and `dfmt`, respectively. Install the matching formatter and
@@ -243,6 +249,7 @@ results, errors or contextual shortcuts on the right. It remains visible in
 zen, Finder, Search Hub and Player modes.
 Buffer searches are entered in this bar, leaving the file content unobstructed;
 long queries scroll to keep the most recently typed characters visible.
+Menu commands are entered in the same bar and long commands show their end.
 The local time is shown as `HH:MM` when the bar has room and updates while idle.
 
 ### Finder filters

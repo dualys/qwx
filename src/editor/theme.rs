@@ -103,7 +103,7 @@ pub fn get_color_for_capture(capture_name: &str) -> Color {
         "attribute" | "keyword.directive" => DIRECTIVES,
         "comment" | "line_comment" | "block_comment" => COMMENTS,
 
-        "type" | "primitive_type" | "type.builtin" | "type.deprecated" => TYPES,
+        "type" | "primitive_type" | "type.builtin" | "type.deprecated" | "tag" => TYPES,
 
         "function" | "function.macro" | "function.method" | "method" => FUNCTIONS,
 

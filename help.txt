@@ -257,6 +257,7 @@ NAVIGATION
                         It shows the current mode, file, modified marker and line position.
                         During search it shows the query, match count or regex errors.
                         Long queries show their most recently typed characters.
+                        Menu commands are also entered here, with their end visible.
                         Messages and context-sensitive shortcuts appear on the right.
                        Local time appears as HH:MM when there is enough room.
 

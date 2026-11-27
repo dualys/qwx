@@ -1,0 +1,11 @@
+(bare_key) @type
+(quoted_key) @string
+(string) @string
+(comment) @comment
+(boolean) @boolean
+(integer) @number
+(float) @number
+(offset_date_time) @string
+(local_date_time) @string
+(local_date) @string
+(local_time) @string

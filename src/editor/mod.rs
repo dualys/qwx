@@ -1,4 +1,4 @@
-use crate::editor::theme::{UI_DMENU_BG, UI_DMENU_FG, get_color_for_capture};
+use crate::editor::theme::get_color_for_capture;
 use crate::finder::{Finder, FinderLayout, list_files};
 use crate::player::{MusicPlayer, PlayerLoadEvent, PlayerLoader};
 use crate::search::SearchHub;
@@ -416,35 +416,6 @@ impl<W: Write> QwxUi<W> for Qwx {
 
     fn draw_menu(&mut self, w: &mut W) -> Result<(), Error> {
         self.base(w)?;
-        let (start_x, start_y, pane_width) = if self.zen {
-            let (x, y, width, _) = self.zen_bounds();
-            (x, y, width)
-        } else if self.is_portrait {
-            (1, 1, self.width.saturating_sub(2))
-        } else {
-            let max_width = 180.min(self.width);
-            let left_x = (self.width.saturating_sub(max_width)) / 2;
-            let right_x = left_x + max_width.saturating_sub(1);
-            let mid_x = left_x + (max_width / 2);
-            let top_y = 1;
-            let mid_y = self.height / 2;
-            match self.focus {
-                PaneFocus::TopLeft => (left_x, top_y, mid_x - left_x),
-                PaneFocus::TopRight => (mid_x + 1, top_y, right_x - mid_x),
-                PaneFocus::BottomLeft => (left_x, mid_y + 1, mid_x - left_x),
-                PaneFocus::BottomRight => (mid_x + 1, mid_y + 1, right_x - mid_x),
-            }
-        };
-        let prompt = format!(" {} ", self.menu_input);
-        let padded_prompt = format!("{:<width$}", prompt, width = pane_width as usize);
-        queue!(
-            w,
-            MoveTo(start_x, start_y),
-            SetBackgroundColor(UI_DMENU_BG),
-            SetForegroundColor(UI_DMENU_FG),
-            Print(padded_prompt),
-            ResetColor
-        )?;
         w.flush()?;
         Ok(())
     }
@@ -605,7 +576,6 @@ impl<W: Write> QwxUi<W> for Qwx {
                     } else {
                         None
                     };
-
                 let search_term = if is_active {
                     if self.mode == Mode::Search {
                         (!self.search_input.is_empty()).then_some(self.search_input.as_str())
@@ -1633,12 +1603,19 @@ impl Qwx {
         } else {
             None
         };
+        let input = match self.mode {
+            Mode::Search => Some(("/", self.search_input.as_str())),
+            Mode::Menu => Some(("", self.menu_input.as_str())),
+            _ => None,
+        };
         let file = self.views.get(self.focus as usize).and_then(|view| {
             self.nodes
                 .iter()
                 .find(|node| node.id == view.active_node_id && node.is_file)
         });
-        let detail = if let Some(query) = query {
+        let detail = if self.mode == Mode::Menu {
+            self.menu_input.clone()
+        } else if let Some(query) = query {
             format!("/{query}")
         } else if let Some(node) = file {
             format!(
@@ -1716,11 +1693,10 @@ impl Qwx {
         let (_, full_detail_width) = clipped(&left_full, usize::MAX);
         let (_, right_full_width) = clipped(&right, usize::MAX);
         let essential_right = error || query.is_some_and(|query| !query.is_empty());
-        let search_room = if self.mode == Mode::Search {
-            clipped(&self.search_input, 6).1.saturating_add(2)
-        } else {
-            0
-        };
+        let input_room = input.map_or(0, |(prefix, text)| {
+            let max_width = if self.mode == Mode::Menu { 16 } else { 6 };
+            clipped(text, max_width).1.saturating_add(prefix.len() + 1)
+        });
         let show_clock = width >= label_width.saturating_add(7)
             && (query.is_some() || width >= full_detail_width.saturating_add(6))
             && (!essential_right
@@ -1728,39 +1704,36 @@ impl Qwx {
                     >= label_width
                         .saturating_add(right_full_width)
                         .saturating_add(8)
-                        .saturating_add(search_room));
+                        .saturating_add(input_room));
         let content_width = width.saturating_sub(if show_clock { 6 } else { 0 });
         let (_, full_left_width) = clipped(&left_full, content_width);
-        let right_width_limit =
-            if !error && self.mode == Mode::Search && !self.search_input.is_empty() {
-                content_width.saturating_sub(label_width.saturating_add(5))
-            } else if error || query.is_some_and(|query| !query.is_empty()) {
-                content_width.saturating_sub(label_width.saturating_add(1))
-            } else {
-                content_width.saturating_sub(full_left_width.saturating_add(1))
-            };
+        let right_width_limit = if !error && self.mode == Mode::Menu {
+            content_width.saturating_sub(label_width.saturating_add(input_room).saturating_add(1))
+        } else if !error && self.mode == Mode::Search && !self.search_input.is_empty() {
+            content_width.saturating_sub(label_width.saturating_add(5))
+        } else if error || query.is_some_and(|query| !query.is_empty()) {
+            content_width.saturating_sub(label_width.saturating_add(1))
+        } else {
+            content_width.saturating_sub(full_left_width.saturating_add(1))
+        };
         let (right, right_width) = clipped(&right, right_width_limit);
         let left_limit = if right_width == 0 {
             content_width
         } else {
             content_width.saturating_sub(right_width + 1)
         };
-        let (left, _) = if self.mode == Mode::Search {
-            let prefix = format!("{label} /");
+        let (left, _) = if let Some((input_prefix, input_text)) = input {
+            let prefix = format!("{label} {input_prefix}");
             let (_, prefix_width) = clipped(&prefix, left_limit);
             let (_, full_prefix_width) = clipped(&prefix, usize::MAX);
             if prefix_width == full_prefix_width && left_limit > prefix_width {
                 let available = left_limit - prefix_width;
-                let (head, head_width) = clipped(&self.search_input, available);
-                let visible_chars = self
-                    .search_input
-                    .chars()
-                    .filter(|c| !c.is_control())
-                    .count();
+                let (head, head_width) = clipped(input_text, available);
+                let visible_chars = input_text.chars().filter(|c| !c.is_control()).count();
                 if head.chars().count() < visible_chars && available > 1 {
                     let mut tail: Vec<char> = Vec::new();
                     let mut tail_width = 0;
-                    for c in self.search_input.chars().rev().filter(|c| !c.is_control()) {
+                    for c in input_text.chars().rev().filter(|c| !c.is_control()) {
                         let char_width = c.width().unwrap_or(0);
                         if tail_width + char_width > available - 1 {
                             break;
@@ -4269,7 +4242,7 @@ pub fn create_config(
 ///
 /// # Notes
 ///
-/// - Some languages, such as `d`, `hcl`, and `glsl`, do not have associated highlight queries.
+/// - Some languages, such as `hcl` and `glsl`, do not have associated highlight queries.
 /// - File extensions for the same language may vary (e.g., `cpp`, `cc`, `hpp` for C++).
 /// - This function relies on the `create_config` helper for building language configurations.
 fn detect_language(
@@ -4292,11 +4265,11 @@ fn detect_language(
             tree_sitter_powershell::HIGHLIGHTS_QUERY,
             theme_keys,
         ),
-        #[cfg(feature = "tree-sitter-sas")]
-        "scss" | "sass" => create_config(
+        #[cfg(feature = "tree-sitter-scss")]
+        "scss" => create_config(
             "scss",
-            Language::from(tree_sitter_sas::LANGUAGE),
-            tree_sitter_sas::HIGHLIGHTS_QUERY,
+            tree_sitter_scss::language(),
+            scss_highlights(),
             theme_keys,
         ),
         #[cfg(feature = "tree-sitter-vhdl")]
@@ -4517,7 +4490,7 @@ fn detect_language(
             theme_keys,
         ),
         #[cfg(feature = "tree-sitter-javascript")]
-        "js" | "mjs" | "cjs" => create_config(
+        "js" | "mjs" | "cjs" | "jsx" => create_config(
             "javascript",
             Language::from(tree_sitter_javascript::LANGUAGE),
             tree_sitter_javascript::HIGHLIGHT_QUERY,
@@ -4587,7 +4560,7 @@ fn detect_language(
             theme_keys,
         ),
         #[cfg(feature = "tree-sitter-ruby")]
-        "rb" => create_config(
+        "rb" | "rake" | "gemspec" | "ru" => create_config(
             "ruby",
             Language::from(tree_sitter_ruby::LANGUAGE),
             tree_sitter_ruby::HIGHLIGHTS_QUERY,
@@ -4618,7 +4591,28 @@ fn detect_language(
         "ts" | "mts" | "cts" => create_config(
             "typescript",
             Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT),
-            tree_sitter_typescript::HIGHLIGHTS_QUERY,
+            typescript_highlights(),
+            theme_keys,
+        ),
+        #[cfg(feature = "tree-sitter-typescript")]
+        "tsx" => create_config(
+            "tsx",
+            Language::from(tree_sitter_typescript::LANGUAGE_TSX),
+            typescript_highlights(),
+            theme_keys,
+        ),
+        #[cfg(feature = "tree-sitter-sequel")]
+        "sql" => create_config(
+            "sql",
+            Language::from(tree_sitter_sequel::LANGUAGE),
+            tree_sitter_sequel::HIGHLIGHTS_QUERY,
+            theme_keys,
+        ),
+        #[cfg(feature = "tree-sitter-toml-ng")]
+        "toml" => create_config(
+            "toml",
+            Language::from(tree_sitter_toml_ng::LANGUAGE),
+            include_str!("queries/toml.scm"),
             theme_keys,
         ),
         #[cfg(feature = "tree-sitter-xml")]
@@ -4643,6 +4637,20 @@ fn detect_language(
             theme_keys,
         ),
         _ => match filename {
+            #[cfg(feature = "tree-sitter-ruby")]
+            "Gemfile" | "Rakefile" => create_config(
+                "ruby",
+                Language::from(tree_sitter_ruby::LANGUAGE),
+                tree_sitter_ruby::HIGHLIGHTS_QUERY,
+                theme_keys,
+            ),
+            #[cfg(feature = "tree-sitter-cmake")]
+            "CMakeLists.txt" => create_config(
+                "cmake",
+                Language::from(tree_sitter_cmake::LANGUAGE),
+                tree_sitter_cmake::HIGHLIGHTS_QUERY,
+                theme_keys,
+            ),
             #[cfg(feature = "tree-sitter-make")]
             "Makefile" => create_config(
                 "make",
@@ -4660,6 +4668,30 @@ fn detect_language(
             _ => None,
         },
     }
+}
+
+#[cfg(feature = "tree-sitter-scss")]
+fn scss_highlights() -> &'static str {
+    static QUERY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    QUERY.get_or_init(|| {
+        format!(
+            "{}\n{}",
+            tree_sitter_css::HIGHLIGHTS_QUERY,
+            tree_sitter_scss::HIGHLIGHTS_QUERY
+        )
+    })
+}
+
+#[cfg(feature = "tree-sitter-typescript")]
+fn typescript_highlights() -> &'static str {
+    static QUERY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    QUERY.get_or_init(|| {
+        format!(
+            "{}\n{}",
+            tree_sitter_javascript::HIGHLIGHT_QUERY,
+            tree_sitter_typescript::HIGHLIGHTS_QUERY
+        )
+    })
 }
 /// Represents the configuration of highlighting for a specific language.
 pub struct LangConfig {
@@ -5382,6 +5414,86 @@ mod tests {
     use super::*;
     use crate::parse_key;
 
+    #[cfg(all(
+        feature = "tree-sitter-ruby",
+        feature = "tree-sitter-css",
+        feature = "tree-sitter-scss",
+        feature = "tree-sitter-javascript",
+        feature = "tree-sitter-typescript",
+        feature = "tree-sitter-sequel",
+        feature = "tree-sitter-toml-ng"
+    ))]
+    #[test]
+    fn rails_and_system_files_get_syntax_highlighting() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases = [
+            ("model.rb", "class User\nend\n", "class"),
+            ("Gemfile", "gem \"rails\"\n", "\"rails\""),
+            ("Rakefile", "require \"rake\"\n", "\"rake\""),
+            ("task.rake", "require \"rake\"\n", "\"rake\""),
+            ("app.css", "body { color: red; }\n", "body"),
+            ("color.css", "body { color: #ff0000; }\n", "#ff0000"),
+            ("app.scss", "@mixin theme { color: red; }\n", "@mixin"),
+            ("nested.scss", ".card { color: #ff0000; }\n", "#ff0000"),
+            ("app.js", "const value = \"hello\";\n", "\"hello\""),
+            ("app.jsx", "const view = <div>hello</div>;\n", "const"),
+            ("app.ts", "const value: string = \"hello\";\n", "\"hello\""),
+            ("app.tsx", "const view = <div>hello</div>;\n", "const"),
+            ("schema.sql", "SELECT 'hello' FROM users;\n", "SELECT"),
+            ("Cargo.toml", "name = \"hello\"\n", "\"hello\""),
+        ];
+        for (name, source, expected) in cases {
+            let path = dir.path().join(name);
+            std::fs::write(&path, source).unwrap();
+            let editor = Ji::open(&path).unwrap();
+            assert!(editor.lang_config.is_some(), "no syntax config for {name}");
+            assert!(editor.query.is_some(), "no syntax query for {name}");
+            let tree = editor.syntax_tree.as_ref().expect("syntax tree");
+            assert!(
+                !tree.root_node().has_error(),
+                "parse error in {name}: {}",
+                tree.root_node().to_sexp()
+            );
+            let spans = editor.get_colored_spans();
+            assert!(
+                spans.iter().any(|(text, color)| {
+                    text.contains(expected) && *color != theme::FG_DEFAULT
+                }),
+                "missing highlight in {name}: {spans:?}"
+            );
+            let node = qwx_load_node(0, &path).unwrap();
+            assert!(
+                node.colored_lines.iter().flatten().any(|(text, color)| {
+                    text.contains(expected) && *color != theme::FG_DEFAULT
+                }),
+                "missing panel highlight in {name}"
+            );
+        }
+    }
+
+    #[cfg(feature = "tree-sitter-cmake")]
+    #[test]
+    fn cmake_lists_gets_syntax_highlighting() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = "# project comment\nproject(example)\n";
+        for name in ["CMakeLists.txt", "module.cmake"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, source).unwrap();
+            let editor = Ji::open(path).unwrap();
+            let spans = editor.get_colored_spans();
+            assert!(editor.lang_config.is_some(), "no CMake config for {name}");
+            assert!(
+                spans
+                    .iter()
+                    .any(|(text, color)| { text == "project" && *color == theme::FUNCTIONS }),
+                "unexpected spans for {name}: {spans:?}"
+            );
+        }
+        let path = dir.path().join("notes.txt");
+        std::fs::write(&path, source).unwrap();
+        assert!(Ji::open(path).unwrap().lang_config.is_none());
+    }
+
     #[cfg(feature = "tree-sitter-d")]
     #[test]
     fn d_files_get_syntax_highlighting() {
@@ -5687,8 +5799,41 @@ mod tests {
         let mut output = Vec::new();
         qwx.draw_menu(&mut output).unwrap();
         let text = String::from_utf8(output).unwrap();
-        assert!(text.contains(":w"));
+        assert!(text.contains("[MENU+ZEN] :w"));
         assert!(!text.contains("\x1b[48;2;0;255;0m"));
+        let mut base_output = Vec::new();
+        qwx.base(&mut base_output).unwrap();
+        assert_eq!(text.as_bytes(), base_output);
+    }
+
+    #[test]
+    fn menu_commands_stay_in_status_bar_across_layouts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.txt");
+        std::fs::write(&path, "first line\nsecond line").unwrap();
+        let mut qwx = command_editor(&path);
+        qwx.width = 32;
+        qwx.height = 24;
+        qwx.mode = Mode::Menu;
+        qwx.menu_input = ":w long_file_name_界fin".into();
+
+        for (zen, portrait) in [(false, false), (false, true), (true, false)] {
+            qwx.zen = zen;
+            qwx.is_portrait = portrait;
+            let mut output = Vec::new();
+            qwx.draw_menu(&mut output).unwrap();
+            let text = String::from_utf8(output).unwrap();
+            assert!(text.contains("界fin"));
+            assert!(text.contains("…"));
+            let mut base_output = Vec::new();
+            qwx.base(&mut base_output).unwrap();
+            assert_eq!(text.as_bytes(), base_output);
+        }
+
+        qwx.status_message = Some("Save failed".into());
+        let mut output = Vec::new();
+        qwx.draw_menu(&mut output).unwrap();
+        assert!(String::from_utf8(output).unwrap().contains("Save failed"));
     }
 
     #[test]
