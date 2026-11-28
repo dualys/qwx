@@ -147,10 +147,10 @@ fn read_message(reader: &mut impl BufRead) -> io::Result<Value> {
         if line == "\r\n" || line == "\n" {
             break;
         }
-        if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("content-length") {
-                length = Some(value.trim().parse::<usize>().map_err(io::Error::other)?);
-            }
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            length = Some(value.trim().parse::<usize>().map_err(io::Error::other)?);
         }
     }
     let length = length.ok_or_else(|| io::Error::other("missing LSP Content-Length"))?;

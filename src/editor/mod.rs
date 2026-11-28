@@ -20,7 +20,9 @@ use crossterm::cursor::{
     Hide, MoveDown, MoveLeft, MoveRight, MoveTo, MoveUp, RestorePosition, SavePosition,
     SetCursorStyle, Show,
 };
-use crossterm::event::{Event, KeyCode, KeyModifiers, poll, read};
+use crossterm::event::{
+    DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyModifiers, poll, read,
+};
 use crossterm::style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor};
 use crossterm::terminal::{
     self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, size,
@@ -231,6 +233,7 @@ impl<W: Write> QwxUi<W> for Qwx {
         }
     }
     fn draw_help(&mut self, w: &mut W) -> Result<(), Error> {
+        self.reset(w)?;
         // Dessine l'éditeur en arrière-plan pour garder le contexte
         self.base(w)?;
         queue!(w, Hide)?;
@@ -308,6 +311,7 @@ impl<W: Write> QwxUi<W> for Qwx {
         Ok(())
     }
     fn draw_normal(&mut self, w: &mut W) -> Result<(), Error> {
+        self.reset(w)?;
         self.base(w)?;
         queue!(w, Show, SetCursorStyle::BlinkingUnderScore)?;
         let (start_x, start_y, p_width, p_height) = if self.zen {
@@ -388,6 +392,7 @@ impl<W: Write> QwxUi<W> for Qwx {
         w.flush()
     }
     fn draw_player(&mut self, w: &mut W) -> Result<(), Error> {
+        self.reset(w)?;
         if let Some(player) = &mut self.player {
             player.draw_local_player(w, self.width, self.height.saturating_sub(1))?;
         } else {
@@ -408,6 +413,7 @@ impl<W: Write> QwxUi<W> for Qwx {
         w.flush()
     }
     fn draw_web(&mut self, w: &mut W) -> Result<(), Error> {
+        self.reset(w)?;
         self.search_hub
             .draw(w, 0, 0, self.width, self.height.saturating_sub(1))?;
         self.draw_status_bar(w)?;
@@ -415,15 +421,13 @@ impl<W: Write> QwxUi<W> for Qwx {
     }
 
     fn draw_menu(&mut self, w: &mut W) -> Result<(), Error> {
-        self.base(w)?;
-        w.flush()?;
-        Ok(())
+        self.base(w)
     }
 
     fn draw_editor(&mut self, w: &mut W) -> Result<(), Error> {
+        queue!(w, Clear(ClearType::All), ResetColor)?;
         self.base(w)?;
         queue!(w, Show, SetCursorStyle::SteadyBlock)?;
-
         let (start_x, start_y, p_width, p_height) = if self.zen {
             self.zen_bounds()
         } else if self.is_portrait {
@@ -771,10 +775,10 @@ impl QwxPanel for Qwx {
             if active_idx < self.views.len() {
                 self.views[active_idx].active_node_id = node_id;
             }
-
-            let mut ed = Ji::default();
-            ed.file_path = node.path.clone();
-
+            let mut ed = Ji {
+                file_path: node.path.clone(),
+                ..Default::default()
+            };
             if let Some(text) = &node.text {
                 ed.rope = text.clone();
             }
@@ -1697,7 +1701,8 @@ impl Qwx {
             let max_width = if self.mode == Mode::Menu { 16 } else { 6 };
             clipped(text, max_width).1.saturating_add(prefix.len() + 1)
         });
-        let show_clock = width >= label_width.saturating_add(7)
+        let show_clock = input.is_none()
+            && width >= label_width.saturating_add(7)
             && (query.is_some() || width >= full_detail_width.saturating_add(6))
             && (!essential_right
                 || width
@@ -2121,6 +2126,32 @@ impl Qwx {
             if let Some(action) = self.keymap.get(&(e.modifiers, e.code)) {
                 match action {
                     Action::SearchPrev | Action::SearchNext => {}
+                    Action::MoveLeft => {
+                        if self.editor.cursor_col > 0 {
+                            self.editor.cursor_col -= 1;
+                        } else if self.editor.cursor_line > 0 {
+                            self.editor.cursor_line -= 1;
+                            self.editor.cursor_col = usize::MAX;
+                            self.editor.clamp_cursor_col();
+                        }
+                        self.follow();
+                    }
+                    Action::MoveRight => {
+                        let total_lines = self.editor.rope.len_lines();
+                        let line = self.editor.safe_line(self.editor.cursor_line);
+                        let mut max_col = line.len_chars();
+                        while max_col > 0 && matches!(line.char(max_col - 1), '\r' | '\n') {
+                            max_col -= 1;
+                        }
+
+                        if self.editor.cursor_col < max_col {
+                            self.editor.cursor_col += 1;
+                        } else if self.editor.cursor_line + 1 < total_lines {
+                            self.editor.cursor_line += 1;
+                            self.editor.cursor_col = 0;
+                        }
+                        self.follow();
+                    }
                     Action::DeleteSelection => {
                         if self.editor.selection.is_some() {
                             self.editor.delete_selection();
@@ -2131,52 +2162,15 @@ impl Qwx {
                     Action::MoveDown => {
                         let total_lines = self.editor.rope.len_lines();
                         if self.editor.cursor_line + 1 < total_lines {
-                            self.editor.cursor_line = (self.editor.cursor_line + 1)
-                                .min(self.editor.rope.len_lines().saturating_sub(1));
+                            self.editor.cursor_line += 1;
+                            self.editor.clamp_cursor_col();
                         }
                         self.follow();
                     }
                     Action::MoveUp => {
                         if self.editor.cursor_line > 0 {
-                            self.editor.cursor_line = self.editor.cursor_line.saturating_sub(1);
-                        }
-                        self.follow();
-                    }
-                    Action::MoveLeft => {
-                        let max_col = self
-                            .editor
-                            .rope
-                            .line(
-                                self.editor
-                                    .cursor_line
-                                    .min(self.editor.rope.len_lines().saturating_sub(1)),
-                            )
-                            .len_chars()
-                            .saturating_sub(1);
-                        if self.editor.cursor_col < max_col {
-                            self.editor.cursor_col -= 1;
-                        } else if self.editor.cursor_line + 1 < self.editor.rope.len_lines() {
-                            self.editor.cursor_line = self.editor.cursor_line.saturating_sub(1);
-                            self.editor.cursor_col = 0;
-                        }
-                        self.follow();
-                    }
-                    Action::MoveRight => {
-                        if self.editor.cursor_col > 0 {
-                            self.editor.cursor_col += 1;
-                        } else if self.editor.cursor_line > 0 {
-                            self.editor.cursor_line = (self.editor.cursor_line + 1)
-                                .min(self.editor.rope.len_lines().saturating_sub(1));
-                            self.editor.cursor_col = self
-                                .editor
-                                .rope
-                                .line(
-                                    self.editor
-                                        .cursor_line
-                                        .min(self.editor.rope.len_lines().saturating_sub(1)),
-                                )
-                                .len_chars()
-                                .saturating_sub(1);
+                            self.editor.cursor_line -= 1;
+                            self.editor.clamp_cursor_col();
                         }
                         self.follow();
                     }
@@ -2185,13 +2179,9 @@ impl Qwx {
                         self.follow();
                     }
                     Action::DeleteSelectedLines => {
-                        eprintln!("DEBUG: DeleteLine, selection={:?}", self.editor.selection);
                         if self.editor.selection.is_some() {
                             self.editor.delete_selection();
                             self.sync_node_content();
-                            eprintln!("DEBUG: deleted, lines={}", self.editor.rope.len_lines());
-                        } else {
-                            eprintln!("DEBUG: no selection!");
                         }
                     }
                     Action::Redo => {
@@ -2225,7 +2215,8 @@ impl Qwx {
                         }
                     }
                     Action::GoEnd => {
-                        self.editor.cursor_line = self.editor.rope.len_lines() - 1;
+                        self.editor.cursor_line = self.editor.rope.len_lines().saturating_sub(1);
+                        self.editor.clamp_cursor_col();
                         self.sync_node_content();
                         self.follow();
                     }
@@ -2243,7 +2234,7 @@ impl Qwx {
                         self.reset(w).expect("failed to reset");
                     }
                     Action::GoTop => {
-                        self.editor.cursor_line = 1;
+                        self.editor.cursor_line = 0;
                         self.editor.cursor_col = 0;
                         self.follow();
                     }
@@ -2596,16 +2587,15 @@ impl Qwx {
             if scheduled
                 .as_ref()
                 .is_some_and(|(_, due)| std::time::Instant::now() >= *due)
+                && let Some((request, _)) = scheduled.take()
             {
-                if let Some((request, _)) = scheduled.take() {
-                    let snapshot = request.rope.clone();
-                    let path = request.path.clone();
-                    let line = request.line;
-                    let col = request.col;
-                    match completion::start(request) {
-                        Ok(task) => pending = Some((task, snapshot, path, line, col, false)),
-                        Err(error) => self.status_message = Some(format!("Completion: {error}")),
-                    }
+                let snapshot = request.rope.clone();
+                let path = request.path.clone();
+                let line = request.line;
+                let col = request.col;
+                match completion::start(request) {
+                    Ok(task) => pending = Some((task, snapshot, path, line, col, false)),
+                    Err(error) => self.status_message = Some(format!("Completion: {error}")),
                 }
             }
             if let Some((task, snapshot, path, line, col, manual)) = &pending {
@@ -2734,7 +2724,7 @@ impl Qwx {
                                 items.clear();
                                 continue;
                             }
-                            _ => items.clear(),
+                            _ => {}
                         }
                     }
                     if pending.take().is_some()
@@ -2907,9 +2897,7 @@ impl Qwx {
                         self.status_message = None;
                     }
                     self.editor.record_undo();
-                    for ch in x.chars() {
-                        self.editor.insert_char_raw(ch);
-                    }
+                    self.editor.insert_str_raw(&x);
                     self.editor.update_syntax_tree();
                     self.sync_node_content();
                     self.follow();
@@ -3095,7 +3083,7 @@ impl Qwx {
                         self.follow();
                     }
                     (KeyModifiers::NONE, KeyCode::Char('p')) => {
-                        self.search_next();
+                        self.search_prev();
                         self.sync_node_content();
                         self.follow();
                     }
@@ -3791,13 +3779,24 @@ impl Qwx {
     }
     pub fn run<W: Write>(&mut self, w: &mut W) -> Result<(), Error> {
         if !self.running {
-            execute!(w, LeaveAlternateScreen, Show)?;
+            execute!(
+                w,
+                LeaveAlternateScreen,
+                Clear(ClearType::All),
+                MoveTo(0, 0),
+                Show
+            )?;
             terminal::disable_raw_mode()?;
-            execute!(w, Clear(ClearType::All), MoveTo(0, 0))?;
             Ok(())
         } else {
             terminal::enable_raw_mode()?;
-            execute!(w, Hide, EnterAlternateScreen, MoveTo(0, 0))?;
+            execute!(
+                w,
+                Hide,
+                EnterAlternateScreen,
+                MoveTo(0, 0),
+                EnableBracketedPaste
+            )?;
             while self.running {
                 self.draw(w)?;
                 if self.player.is_none()
@@ -3813,7 +3812,7 @@ impl Qwx {
                 }
                 self.handle_events(w);
             }
-            execute!(w, LeaveAlternateScreen, Show)?;
+            execute!(w, LeaveAlternateScreen, DisableBracketedPaste, Show)?;
             terminal::disable_raw_mode()?;
             Ok(())
         }
@@ -4740,8 +4739,108 @@ impl std::fmt::Display for NonTextFile {
 impl std::error::Error for NonTextFile {}
 
 impl Ji {
+    pub fn clamp_cursor_col(&mut self) {
+        let total_lines = self.rope.len_lines();
+        self.cursor_line = self.cursor_line.min(total_lines.saturating_sub(1));
+        let line = self.safe_line(self.cursor_line);
+        let mut max_col = line.len_chars();
+        while max_col > 0 && matches!(line.char(max_col - 1), '\r' | '\n') {
+            max_col -= 1;
+        }
+        self.cursor_col = self.cursor_col.min(max_col);
+    }
+
+    pub fn undo(&mut self) {
+        if let Some(snapshot) = self.undo_stack.pop() {
+            if self.redo_stack.len() >= 100 {
+                self.redo_stack.remove(0);
+            }
+            self.redo_stack.push(EditSnapshot {
+                rope: self.rope.clone(),
+                cursor_line: self.cursor_line,
+                cursor_col: self.cursor_col,
+            });
+            self.rope = snapshot.rope;
+            self.cursor_line = snapshot.cursor_line;
+            self.cursor_col = snapshot.cursor_col;
+            self.clamp_cursor_col();
+            self.selection = None;
+            self.syntax_tree = None;
+            self.update_syntax_tree();
+            self.is_dirty = self.saved_hash != Some(self.content_hash());
+        }
+    }
+
+    pub fn redo(&mut self) {
+        if let Some(snapshot) = self.redo_stack.pop() {
+            if self.undo_stack.len() >= 100 {
+                self.undo_stack.remove(0);
+            }
+            self.undo_stack.push(EditSnapshot {
+                rope: self.rope.clone(),
+                cursor_line: self.cursor_line,
+                cursor_col: self.cursor_col,
+            });
+            self.rope = snapshot.rope;
+            self.cursor_line = snapshot.cursor_line;
+            self.cursor_col = snapshot.cursor_col;
+            self.clamp_cursor_col();
+            self.selection = None;
+            self.syntax_tree = None;
+            self.update_syntax_tree();
+            self.is_dirty = self.saved_hash != Some(self.content_hash());
+        }
+    }
+
+    pub fn paste(&mut self) {
+        if let Some(text) = self.clipboard.clone() {
+            self.record_undo();
+            self.insert_str_raw(&text);
+            self.update_syntax_tree();
+        }
+    }
+
+    pub fn insert_str_raw(&mut self, text: &str) {
+        let clean = text.replace("\r\n", "\n");
+        if clean.is_empty() {
+            return;
+        }
+
+        let line_idx = self
+            .cursor_line
+            .min(self.rope.len_lines().saturating_sub(1));
+        let line_start = self.rope.line_to_char(line_idx);
+        let line_len = self.rope.line(line_idx).len_chars();
+        let col = self.cursor_col.min(line_len);
+        let char_idx = line_start + col;
+        let byte_idx = self.rope.char_to_byte(char_idx);
+
+        let added_lines = clean.matches('\n').count();
+        let new_end_col = if added_lines == 0 {
+            col + clean.chars().count()
+        } else {
+            clean.rsplit('\n').next().map_or(0, |l| l.chars().count())
+        };
+
+        if let Some(ref mut tree) = self.syntax_tree {
+            let edit = InputEdit {
+                start_byte: byte_idx,
+                old_end_byte: byte_idx,
+                new_end_byte: byte_idx + clean.len(),
+                start_position: Point::new(line_idx, col),
+                old_end_position: Point::new(line_idx, col),
+                new_end_position: Point::new(line_idx + added_lines, new_end_col),
+            };
+            tree.edit(&edit);
+        }
+
+        self.rope.insert(char_idx, &clean);
+        self.cursor_line = line_idx + added_lines;
+        self.cursor_col = new_end_col;
+    }
+
     fn replace_formatted(&mut self, formatted: String) {
-        if self.rope.to_string() == formatted {
+        if self.rope == formatted {
             return;
         }
         self.record_undo();
@@ -4827,46 +4926,6 @@ impl Ji {
         self.is_dirty = true;
     }
 
-    /// Reverts the text editor to the previous state on the undo stack.
-    pub fn undo(&mut self) {
-        if let Some(snapshot) = self.undo_stack.pop() {
-            if self.redo_stack.len() >= 100 {
-                self.redo_stack.remove(0);
-            }
-            self.redo_stack.push(EditSnapshot {
-                rope: self.rope.clone(),
-                cursor_line: self.cursor_line,
-                cursor_col: self.cursor_col,
-            });
-            self.rope = snapshot.rope;
-            self.cursor_line = snapshot.cursor_line;
-            self.cursor_col = snapshot.cursor_col;
-            self.selection = None;
-            self.update_syntax_tree();
-            self.is_dirty = self.saved_hash != Some(self.content_hash());
-        }
-    }
-
-    /// Restores the next state from the redo stack.
-    pub fn redo(&mut self) {
-        if let Some(snapshot) = self.redo_stack.pop() {
-            if self.undo_stack.len() >= 100 {
-                self.undo_stack.remove(0);
-            }
-            self.undo_stack.push(EditSnapshot {
-                rope: self.rope.clone(),
-                cursor_line: self.cursor_line,
-                cursor_col: self.cursor_col,
-            });
-            self.rope = snapshot.rope;
-            self.cursor_line = snapshot.cursor_line;
-            self.cursor_col = snapshot.cursor_col;
-            self.selection = None;
-            self.update_syntax_tree();
-            self.is_dirty = self.saved_hash != Some(self.content_hash());
-        }
-    }
-
     /// Copies selected lines or current line into the internal clipboard.
     pub fn yank(&mut self) -> Option<String> {
         let text = if let Some((start, end)) = self.selection {
@@ -4885,18 +4944,6 @@ impl Ji {
         self.clipboard = Some(text.clone());
         Some(text)
     }
-
-    /// Pastes text from the internal clipboard at the current cursor position.
-    pub fn paste(&mut self) {
-        if let Some(text) = self.clipboard.clone() {
-            self.record_undo();
-            for ch in text.chars() {
-                self.insert_char_raw(ch);
-            }
-            self.update_syntax_tree();
-        }
-    }
-
     /// Selects the entire line where the cursor is currently positioned.
     pub fn select_line(&mut self) {
         if let Some((start, end)) = self.selection {
@@ -5227,7 +5274,10 @@ impl Ji {
 
         if target_char == '\n' {
             start_point.row -= 1;
-            start_point.column = self.safe_line(start_point.row).len_chars() - 1;
+            start_point.column = self
+                .safe_line(start_point.row)
+                .len_chars()
+                .saturating_sub(1);
         } else {
             start_point.column -= 1;
         }

@@ -148,6 +148,7 @@ impl FinderLayout {
     }
 
     /// Draw the finder on the screen.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw<W: Write>(
         &self,
         finder: &Finder,
